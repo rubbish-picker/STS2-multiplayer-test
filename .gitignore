@@ -1,0 +1,28 @@
+# API keys and local config — NEVER commit
+config.json
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/*.egg-info/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Local machine paths (mod dev)
+local.props
+
+# sts2.dll 反编译输出（版权内容，不进 git；由用户运行 scripts/decompile_sts2.py 生成）
+sts2_decompiled/
+
+# 沙箱测试配置（含本机绝对路径；由 scripts/generate_sandbox_wsb.bat 生成）
+scripts/sandbox_test.wsb
+
+# OS
+.DS_Store
+Thumbs.db
