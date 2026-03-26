@@ -15,6 +15,7 @@ _MODEL_MAP = {
     "deepseek":  "deepseek/deepseek-chat",
     "qwen":      "openai/qwen-plus",
     "zhipu":     "zhipuai/glm-4-flash",
+    "openai":    "gpt-4.1-mini",
 }
 
 
@@ -74,7 +75,7 @@ async def _stream_via_litellm(
     on_chunk: Callable[[str], Awaitable[None]],
 ) -> str:
     provider = llm_cfg.get("provider", "anthropic")
-    model = _MODEL_MAP.get(provider, "claude-sonnet-4-6")
+    model = llm_cfg.get("model") or _MODEL_MAP.get(provider, "claude-sonnet-4-6")
 
     stream = await litellm.acompletion(
         model=model,

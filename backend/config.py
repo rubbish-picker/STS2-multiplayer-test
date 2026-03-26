@@ -16,7 +16,8 @@ CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 DEFAULT_CONFIG = {
     "llm": {
         "mode": "claude_subscription",  # "claude_subscription" | "api_key"
-        "provider": "anthropic",        # "anthropic" | "moonshot" | "deepseek" | "qwen" | "zhipu"
+        "provider": "anthropic",        # "anthropic" | "moonshot" | "deepseek" | "qwen" | "zhipu" | "openai"
+        "model": "",                    # 留空则按 provider 使用默认模型；openai 兼容接口建议显式填写
         "api_key": "",
         "base_url": "",                 # 留空则使用各 provider 默认值
     },

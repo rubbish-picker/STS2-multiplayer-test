@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import threading
+import shutil
 from pathlib import Path
 
 from config import get_config, get_decompiled_src_path
@@ -33,6 +34,23 @@ async def run_claude_code(
     cfg = get_config()
     llm_cfg = cfg["llm"]
 
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        if llm_cfg.get("mode") == "claude_subscription":
+            raise RuntimeError(
+                "未找到 Claude Code CLI。请先安装 `npm install -g @anthropic-ai/claude-code`，"
+                "然后运行 `claude login`。"
+            )
+        raise RuntimeError(
+            "当前项目的 Code Agent 仍依赖本机 Claude Code CLI 来生成/修改代码，"
+            "即使 `llm.mode` 设置为 `api_key` 也是如此。\n"
+            "你现在使用的是 OpenAI 兼容接口，它可以驱动普通 LLM 调用，但不能替代这里的 `claude` 命令。\n"
+            "可选解决方案：\n"
+            "1. 安装 Claude Code CLI：`npm install -g @anthropic-ai/claude-code`\n"
+            "2. 使用支持 Claude Code CLI 的 Anthropic 登录/接口\n"
+            "3. 若要真正支持纯 OpenAI API，需要重写这条 Code Agent 执行链路"
+        )
+
     env = os.environ.copy()
 
     if llm_cfg["mode"] == "claude_subscription":
@@ -43,7 +61,7 @@ async def run_claude_code(
             env["ANTHROPIC_BASE_URL"] = llm_cfg["base_url"]
 
     cmd = [
-        "claude",
+        claude_path,
         "--print",
         "--verbose",
         "--dangerously-skip-permissions",

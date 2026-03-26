@@ -238,5 +238,6 @@ def _resolve_model(llm_cfg: dict) -> str:
         "deepseek":  "deepseek/deepseek-chat",
         "qwen":      "openai/qwen-plus",   # 通过 LiteLLM openai 兼容路由
         "zhipu":     "zhipuai/glm-4-flash",
+        "openai":    "gpt-4.1-mini",
     }
-    return _model_map.get(provider, "claude-sonnet-4-6")
+    return llm_cfg.get("model") or _model_map.get(provider, "claude-sonnet-4-6")

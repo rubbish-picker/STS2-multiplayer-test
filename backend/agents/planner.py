@@ -139,8 +139,9 @@ async def _plan_via_litellm(prompt: str, llm_cfg: dict) -> str:
         "deepseek":  "deepseek/deepseek-chat",
         "qwen":      "openai/qwen-plus",
         "zhipu":     "zhipuai/glm-4-flash",
+        "openai":    "gpt-4.1-mini",
     }
-    model = _model_map.get(provider, "claude-sonnet-4-6")
+    model = llm_cfg.get("model") or _model_map.get(provider, "claude-sonnet-4-6")
     response = await litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
