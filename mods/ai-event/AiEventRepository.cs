@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace AiEvent;
@@ -11,9 +12,11 @@ public static class AiEventRepository
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     private static readonly object SyncRoot = new();
+    private static bool _hasRewrittenReadableJson;
 
     private static Dictionary<AiEventSlot, AiGeneratedEventPayload> _activePayloads = new();
     private static List<AiEventPoolEntry> _poolEntries = new();
@@ -32,6 +35,7 @@ public static class AiEventRepository
             LoadPool();
             NormalizeActivePayloads();
             EnsureAllSlots();
+            RewriteReadableJsonIfNeeded();
         }
     }
 
@@ -122,6 +126,68 @@ public static class AiEventRepository
                 .Select(CloneEntry)
                 .ToList();
         }
+    }
+
+    public static IReadOnlyList<AiEventPoolEntry> GetPoolEntriesForSeed(string seed, string? source = null)
+    {
+        lock (SyncRoot)
+        {
+            IEnumerable<AiEventPoolEntry> query = _poolEntries.Where(entry => string.Equals(entry.Seed, seed, StringComparison.Ordinal));
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                query = query.Where(entry => string.Equals(entry.Source, source, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return query
+                .OrderByDescending(entry => entry.GeneratedAtUtc)
+                .Select(CloneEntry)
+                .ToList();
+        }
+    }
+
+    public static IReadOnlyList<AiEventPoolEntry> GetPoolEntriesByIds(IEnumerable<string> entryIds)
+    {
+        lock (SyncRoot)
+        {
+            HashSet<string> idSet = entryIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            return _poolEntries
+                .Where(entry => idSet.Contains(entry.EntryId))
+                .Select(CloneEntry)
+                .ToList();
+        }
+    }
+
+    public static IReadOnlyList<AiEventPoolEntry> GetAllPoolEntries()
+    {
+        lock (SyncRoot)
+        {
+            return _poolEntries
+                .OrderByDescending(entry => entry.GeneratedAtUtc)
+                .Select(CloneEntry)
+                .ToList();
+        }
+    }
+
+    public static void DeletePoolEntry(string entryId)
+    {
+        lock (SyncRoot)
+        {
+            _poolEntries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            SavePoolInternal();
+        }
+    }
+
+    public static string SerializePoolEntry(AiEventPoolEntry entry)
+    {
+        return JsonSerializer.Serialize(entry, JsonOptions);
+    }
+
+    public static AiEventPoolEntry DeserializePoolEntry(string json)
+    {
+        return JsonSerializer.Deserialize<AiEventPoolEntry>(json, JsonOptions) ?? new AiEventPoolEntry();
     }
 
     public static void SaveHistorySnapshot(string? seed, string source, IEnumerable<AiGeneratedEventPayload> events)
@@ -320,6 +386,54 @@ public static class AiEventRepository
     private static void SavePoolInternal()
     {
         File.WriteAllText(PoolPath, JsonSerializer.Serialize(_poolEntries.OrderByDescending(p => p.GeneratedAtUtc), JsonOptions));
+    }
+
+    private static void RewriteReadableJsonIfNeeded()
+    {
+        if (_hasRewrittenReadableJson)
+        {
+            return;
+        }
+
+        _hasRewrittenReadableJson = true;
+
+        try
+        {
+            SaveActiveCacheInternal();
+            SavePoolInternal();
+            RewriteHistorySnapshots();
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to rewrite ai-event cache/history with readable unicode: {ex}");
+        }
+    }
+
+    private static void RewriteHistorySnapshots()
+    {
+        if (!Directory.Exists(HistoryDirectoryPath))
+        {
+            return;
+        }
+
+        foreach (string path in Directory.GetFiles(HistoryDirectoryPath, "*.json"))
+        {
+            try
+            {
+                string json = File.ReadAllText(path);
+                AiEventGenerationSnapshot? snapshot = JsonSerializer.Deserialize<AiEventGenerationSnapshot>(json, JsonOptions);
+                if (snapshot == null)
+                {
+                    continue;
+                }
+
+                File.WriteAllText(path, JsonSerializer.Serialize(snapshot, JsonOptions));
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Error($"Failed to rewrite ai-event history snapshot {path}: {ex}");
+            }
+        }
     }
 
     private static AiGeneratedEventPayload ClonePayload(AiGeneratedEventPayload payload)

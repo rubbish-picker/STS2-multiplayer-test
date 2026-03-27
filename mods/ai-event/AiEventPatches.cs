@@ -2,9 +2,11 @@ using System.Collections.Generic;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
+using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -60,6 +62,29 @@ public static class AiEventPatches
             {
                 __result = RoomType.Event;
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(NGame), nameof(NGame.LoadRun))]
+    private static class LoadRunPatch
+    {
+        private static void Prefix(RunState runState)
+        {
+            AiEventRuntimeService.ResumeRun(runState);
+        }
+    }
+
+    [HarmonyPatch(typeof(NMainMenu), nameof(NMainMenu._Ready))]
+    private static class MainMenuReadyPatch
+    {
+        private static void Prefix(NMainMenu __instance)
+        {
+            AiEventMainMenuIntegration.InstallButton(__instance);
+        }
+
+        private static void Postfix(NMainMenu __instance)
+        {
+            AiEventMainMenuIntegration.FinalizeMenu(__instance);
         }
     }
 }

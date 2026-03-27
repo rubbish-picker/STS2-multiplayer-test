@@ -41,11 +41,6 @@ public static class AiEventGenerationService
     {
         AiEventConfigService.Reload();
 
-        if (!AiEventConfigService.Current.EnableLlmGeneration)
-        {
-            return null;
-        }
-
         if (!HasApiConfig())
         {
             return "ai-event 的 LLM 配置不完整，已取消本次开局。\n请检查 base_url、api_key 和 model 是否都已填写。";

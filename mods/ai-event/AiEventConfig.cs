@@ -12,9 +12,6 @@ public sealed class AiEventRuntimeConfig
     [JsonPropertyName("mode")]
     public string Mode { get; set; } = "llm_dynamic";
 
-    [JsonPropertyName("enable_llm_generation")]
-    public bool EnableLlmGeneration { get; set; } = true;
-
     [JsonPropertyName("base_url")]
     public string BaseUrl { get; set; } = string.Empty;
 
@@ -51,8 +48,6 @@ public sealed class AiEventRuntimeConfig
     [JsonPropertyName("dynamic_weight")]
     public double DynamicWeight { get; set; } = 0.4;
 
-    [JsonPropertyName("debug_force_llm_events")]
-    public bool DebugForceLlmEvents { get; set; } = false;
 }
 
 public static class AiEventConfigService
@@ -169,8 +164,7 @@ public sealed class AiEventModConfig : SimpleModConfig
 {
     public AiEventModConfig(AiEventRuntimeConfig source)
     {
-        Mode = source.Mode;
-        EnableLlmGeneration = source.EnableLlmGeneration;
+        Mode = AiEventConfigService.ParseMode(source.Mode);
         BaseUrl = source.BaseUrl;
         ApiKey = source.ApiKey;
         Model = source.Model;
@@ -183,15 +177,10 @@ public sealed class AiEventModConfig : SimpleModConfig
         VanillaWeightInput = source.VanillaWeight.ToString("0.00");
         CacheWeightInput = source.CacheWeight.ToString("0.00");
         DynamicWeightInput = source.DynamicWeight.ToString("0.00");
-        DebugForceLlmEvents = source.DebugForceLlmEvents;
     }
 
     [ConfigSection("General")]
-    [ConfigTextInput(TextInputPreset.Anything, MaxLength = 40)]
-    public static string Mode { get; set; } = "llm_dynamic";
-
-    [ConfigSection("General")]
-    public static bool EnableLlmGeneration { get; set; } = true;
+    public static AiEventMode Mode { get; set; } = AiEventMode.LlmDynamic;
 
     [ConfigSection("LLM")]
     [ConfigTextInput(TextInputPreset.Anything, MaxLength = 300)]
@@ -240,9 +229,6 @@ public sealed class AiEventModConfig : SimpleModConfig
     [ConfigTextInput(TextInputPreset.Anything, MaxLength = 16)]
     public static string DynamicWeightInput { get; set; } = "0.40";
 
-    [ConfigSection("Debug")]
-    public static bool DebugForceLlmEvents { get; set; } = false;
-
     [ConfigIgnore]
     public int NotAConfigProperty { get; set; }
 
@@ -251,7 +237,6 @@ public sealed class AiEventModConfig : SimpleModConfig
         return new AiEventRuntimeConfig
         {
             Mode = NormalizeMode(Mode),
-            EnableLlmGeneration = EnableLlmGeneration,
             BaseUrl = BaseUrl,
             ApiKey = ApiKey,
             Model = Model,
@@ -264,7 +249,6 @@ public sealed class AiEventModConfig : SimpleModConfig
             VanillaWeight = ParseWeight(VanillaWeightInput, 0.35),
             CacheWeight = ParseWeight(CacheWeightInput, 0.25),
             DynamicWeight = ParseWeight(DynamicWeightInput, 0.40),
-            DebugForceLlmEvents = DebugForceLlmEvents,
         };
     }
 
@@ -300,9 +284,9 @@ public sealed class AiEventModConfig : SimpleModConfig
         return Math.Clamp(value, 0d, 100d);
     }
 
-    private static string NormalizeMode(string? rawValue)
+    private static string NormalizeMode(AiEventMode mode)
     {
-        return AiEventConfigService.ParseMode(rawValue) switch
+        return mode switch
         {
             AiEventMode.Vanilla => "vanilla",
             AiEventMode.VanillaPlusCache => "vanilla_plus_cache",

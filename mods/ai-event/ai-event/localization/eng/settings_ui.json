@@ -1,0 +1,24 @@
+{
+  "AIEVENT-GENERAL.title": "General",
+  "AIEVENT-LLM.title": "LLM",
+  "AIEVENT-GENERATION.title": "Generation",
+
+  "AIEVENT-MODE.title": "Event Mode",
+  "AIEVENT-MODE.Vanilla": "Pure Vanilla",
+  "AIEVENT-MODE.VanillaPlusCache": "Vanilla + LLM Cache",
+  "AIEVENT-MODE.LlmDynamic": "LLM Dynamic",
+  "AIEVENT-MODE.LlmDebug": "LLM Debug",
+
+  "AIEVENT-BASEURL.title": "Base URL",
+  "AIEVENT-APIKEY.title": "API Key",
+  "AIEVENT-MODEL.title": "Model",
+  "AIEVENT-TEMPERATUREINPUT.title": "Temperature",
+  "AIEVENT-MAXOUTPUTTOKENS.title": "Max Output Tokens",
+  "AIEVENT-REQUESTTIMEOUTSECONDS.title": "Request Timeout Seconds",
+  "AIEVENT-GENERATEONRUNSTART.title": "Generate On Run Start",
+  "AIEVENT-CACHEPOOLLIMIT.title": "Cache Pool Limit",
+  "AIEVENT-DYNAMICEVENTSPERRUN.title": "Dynamic Events Per Run",
+  "AIEVENT-VANILLAWEIGHTINPUT.title": "Vanilla Weight",
+  "AIEVENT-CACHEWEIGHTINPUT.title": "Cache Weight",
+  "AIEVENT-DYNAMICWEIGHTINPUT.title": "Dynamic Weight"
+}

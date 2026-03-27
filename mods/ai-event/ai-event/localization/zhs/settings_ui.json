@@ -1,0 +1,24 @@
+{
+  "AIEVENT-GENERAL.title": "基础",
+  "AIEVENT-LLM.title": "LLM",
+  "AIEVENT-GENERATION.title": "生成",
+
+  "AIEVENT-MODE.title": "事件模式",
+  "AIEVENT-MODE.Vanilla": "纯原版：只出现原版事件",
+  "AIEVENT-MODE.VanillaPlusCache": "原版+缓存：原版事件池混入最近缓存的 AI 事件",
+  "AIEVENT-MODE.LlmDynamic": "LLM 动态：每局异步生成新事件，并与原版/缓存混合",
+  "AIEVENT-MODE.LlmDebug": "LLM 调试：只测 AI 事件，并尽量让问号房变成事件",
+
+  "AIEVENT-BASEURL.title": "Base URL",
+  "AIEVENT-APIKEY.title": "API Key",
+  "AIEVENT-MODEL.title": "模型名",
+  "AIEVENT-TEMPERATUREINPUT.title": "温度",
+  "AIEVENT-MAXOUTPUTTOKENS.title": "最大输出 Token",
+  "AIEVENT-REQUESTTIMEOUTSECONDS.title": "请求超时秒数",
+  "AIEVENT-GENERATEONRUNSTART.title": "开局立即生成",
+  "AIEVENT-CACHEPOOLLIMIT.title": "缓存池上限",
+  "AIEVENT-DYNAMICEVENTSPERRUN.title": "每局动态事件数",
+  "AIEVENT-VANILLAWEIGHTINPUT.title": "原版事件权重",
+  "AIEVENT-CACHEWEIGHTINPUT.title": "缓存事件权重",
+  "AIEVENT-DYNAMICWEIGHTINPUT.title": "动态事件权重"
+}

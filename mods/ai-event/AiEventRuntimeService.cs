@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Text.Json;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -10,8 +12,14 @@ namespace AiEvent;
 public static class AiEventRuntimeService
 {
     private static readonly object SyncRoot = new();
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+    };
 
     private static AiEventRunSession? _currentSession;
+
+    private static string SessionStatePath => Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.run_session.json");
 
     public static void BeginRun(string seed, IReadOnlyList<ActModel> acts)
     {
@@ -25,8 +33,42 @@ public static class AiEventRuntimeService
             _currentSession = session;
         }
 
+        SaveSessionState(session);
+
         AiEventMode mode = AiEventConfigService.GetMode();
         if (mode is AiEventMode.LlmDynamic or AiEventMode.LlmDebug)
+        {
+            _ = Task.Run(() => GenerateDynamicPoolAsync(session));
+        }
+    }
+
+    public static void ResumeRun(RunState runState)
+    {
+        AiEventConfigService.Reload();
+        AiEventRepository.Initialize();
+
+        AiEventMode mode = AiEventConfigService.GetMode();
+        if (mode is AiEventMode.Vanilla or AiEventMode.VanillaPlusCache)
+        {
+            lock (SyncRoot)
+            {
+                _currentSession = null;
+            }
+
+            return;
+        }
+
+        string seed = runState.Rng.StringSeed;
+        AiEventRunSession session = LoadOrCreateSession(seed, runState.Acts);
+
+        lock (SyncRoot)
+        {
+            _currentSession = session;
+        }
+
+        SaveSessionState(session);
+
+        if (session.GeneratedCount < session.GenerationPlan.Count)
         {
             _ = Task.Run(() => GenerateDynamicPoolAsync(session));
         }
@@ -238,6 +280,7 @@ public static class AiEventRuntimeService
 
             entry = candidates[session.Random.Next(candidates.Count)];
             session.UsedDynamicEntryIds.Add(entry.EntryId);
+            SaveSessionState(session);
             return true;
         }
     }
@@ -254,13 +297,14 @@ public static class AiEventRuntimeService
             }
 
             List<AiGeneratedEventPayload> generatedPayloads = new();
-            foreach (AiEventSlot slot in session.GenerationPlan)
+            for (int index = session.GeneratedCount; index < session.GenerationPlan.Count; index++)
             {
                 if (!IsSessionCurrent(session))
                 {
                     return;
                 }
 
+                AiEventSlot slot = session.GenerationPlan[index];
                 try
                 {
                     AiGeneratedEventPayload payload = await AiEventGenerationService.GeneratePayloadAsync(slot, session.Seed);
@@ -270,8 +314,10 @@ public static class AiEventRuntimeService
                     lock (session.SyncRoot)
                     {
                         session.DynamicReadyEntries.Add(entry);
+                        session.GeneratedCount = Math.Max(session.GeneratedCount, index + 1);
                     }
 
+                    SaveSessionState(session);
                     generatedPayloads.Add(entry.Payload);
                     MainFile.Logger.Info($"[ai-event] generated dynamic event {entry.EntryId} for slot {slot}.");
                 }
@@ -306,6 +352,95 @@ public static class AiEventRuntimeService
         return new Random(seed);
     }
 
+    private static AiEventRunSession LoadOrCreateSession(string seed, IReadOnlyList<ActModel> acts)
+    {
+        AiEventRunSession? restored = LoadSessionState(seed);
+        if (restored != null)
+        {
+            return restored;
+        }
+
+        AiEventRunSession session = new(seed, acts.Select(AiEventRegistry.TryGetSlotForAct).Where(slot => slot.HasValue).Select(slot => slot!.Value).ToList());
+        IReadOnlyList<AiEventPoolEntry> existingEntries = AiEventRepository.GetPoolEntriesForSeed(seed, "llm_dynamic");
+        lock (session.SyncRoot)
+        {
+            session.DynamicReadyEntries.AddRange(existingEntries.OrderBy(entry => entry.GeneratedAtUtc));
+            session.GeneratedCount = session.DynamicReadyEntries.Count;
+        }
+
+        return session;
+    }
+
+    private static AiEventRunSession? LoadSessionState(string seed)
+    {
+        try
+        {
+            if (!File.Exists(SessionStatePath))
+            {
+                return null;
+            }
+
+            string json = File.ReadAllText(SessionStatePath);
+            AiEventRunSessionState? state = JsonSerializer.Deserialize<AiEventRunSessionState>(json, JsonOptions);
+            if (state == null || !string.Equals(state.Seed, seed, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            AiEventRunSession session = new(seed, state.ActSlots ?? new List<AiEventSlot>(), state.GenerationPlan ?? new List<AiEventSlot>());
+            IReadOnlyDictionary<string, AiEventPoolEntry> entriesById = AiEventRepository
+                .GetPoolEntriesByIds(state.ReadyEntryIds.Concat(state.UsedEntryIds))
+                .ToDictionary(entry => entry.EntryId, StringComparer.OrdinalIgnoreCase);
+
+            lock (session.SyncRoot)
+            {
+                foreach (string readyId in state.ReadyEntryIds)
+                {
+                    if (entriesById.TryGetValue(readyId, out AiEventPoolEntry? entry))
+                    {
+                        session.DynamicReadyEntries.Add(entry);
+                    }
+                }
+
+                session.UsedDynamicEntryIds.UnionWith(state.UsedEntryIds);
+                session.GeneratedCount = Math.Max(state.GeneratedCount, session.DynamicReadyEntries.Count + session.UsedDynamicEntryIds.Count);
+            }
+
+            return session;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"[ai-event] failed to load run session state: {ex}");
+            return null;
+        }
+    }
+
+    private static void SaveSessionState(AiEventRunSession session)
+    {
+        try
+        {
+            AiEventRunSessionState state;
+            lock (session.SyncRoot)
+            {
+                state = new AiEventRunSessionState
+                {
+                    Seed = session.Seed,
+                    ActSlots = session.ActSlots.ToList(),
+                    GenerationPlan = session.GenerationPlan.ToList(),
+                    ReadyEntryIds = session.DynamicReadyEntries.Select(entry => entry.EntryId).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    UsedEntryIds = session.UsedDynamicEntryIds.ToList(),
+                    GeneratedCount = session.GeneratedCount,
+                };
+            }
+
+            File.WriteAllText(SessionStatePath, JsonSerializer.Serialize(state, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"[ai-event] failed to save run session state: {ex}");
+        }
+    }
+
     private sealed class AiEventRunSession
     {
         public AiEventRunSession(string seed, List<AiEventSlot> actSlots)
@@ -313,6 +448,14 @@ public static class AiEventRuntimeService
             Seed = seed;
             ActSlots = actSlots;
             GenerationPlan = BuildGenerationPlan(actSlots);
+            Random = new Random(seed.GetHashCode());
+        }
+
+        public AiEventRunSession(string seed, List<AiEventSlot> actSlots, List<AiEventSlot> generationPlan)
+        {
+            Seed = seed;
+            ActSlots = actSlots;
+            GenerationPlan = generationPlan.Count > 0 ? generationPlan : BuildGenerationPlan(actSlots);
             Random = new Random(seed.GetHashCode());
         }
 
@@ -329,6 +472,8 @@ public static class AiEventRuntimeService
         public object SyncRoot { get; } = new();
 
         public Random Random { get; }
+
+        public int GeneratedCount { get; set; }
 
         private static List<AiEventSlot> BuildGenerationPlan(IReadOnlyList<AiEventSlot> actSlots)
         {
@@ -373,5 +518,20 @@ public static class AiEventRuntimeService
 
             return plan.Take(target).ToList();
         }
+    }
+
+    private sealed class AiEventRunSessionState
+    {
+        public string Seed { get; set; } = string.Empty;
+
+        public List<AiEventSlot> ActSlots { get; set; } = new();
+
+        public List<AiEventSlot> GenerationPlan { get; set; } = new();
+
+        public List<string> ReadyEntryIds { get; set; } = new();
+
+        public List<string> UsedEntryIds { get; set; } = new();
+
+        public int GeneratedCount { get; set; }
     }
 }
