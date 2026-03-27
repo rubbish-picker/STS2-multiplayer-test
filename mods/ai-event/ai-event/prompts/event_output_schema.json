@@ -1,0 +1,36 @@
+{
+  "event_id": "UPPER_SNAKE_CASE",
+  "title": "Event title",
+  "tone_notes": [
+    "1-3 short notes about mood and voice"
+  ],
+  "pages": {
+    "INITIAL": {
+      "description": "Event intro text with STS2-style inline markup such as [gold][/gold], [jitter][/jitter], [sine][/sine], [rainbow ...][/rainbow].",
+      "options": {
+        "OPTION_A": {
+          "title": "Option title",
+          "description": "Mechanical summary text with dynamic vars like {Gold}, {Heal}, {Damage}."
+        },
+        "OPTION_B": {
+          "title": "Option title",
+          "description": "Mechanical summary text."
+        }
+      }
+    },
+    "OPTION_A_RESULT": {
+      "description": "Follow-up paragraph after choosing option A."
+    },
+    "OPTION_B_RESULT": {
+      "description": "Follow-up paragraph after choosing option B."
+    }
+  },
+  "dynamic_vars": {
+    "Gold": 28,
+    "Heal": 6
+  },
+  "implementation_notes": {
+    "option_a_effect": "What the runtime should do",
+    "option_b_effect": "What the runtime should do"
+  }
+}

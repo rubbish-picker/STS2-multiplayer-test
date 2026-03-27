@@ -1,0 +1,10 @@
+{
+  "AI_GENERATED_EVENT.title": "The Helpful Draft",
+  "AI_GENERATED_EVENT.pages.INITIAL.description": "A [gold]vellum scroll[/gold] flutters down from somewhere above and lands in your hands.\n\nIts surface is crowded with [aqua]well-structured bullet points[/aqua], [purple]crossed-out flourishes[/purple], and highlighted phrases that seem to rewrite themselves whenever you blink.\n\nAt the bottom, a final line appears in careful script:\n[sine][blue]\"Maintain the Spire's voice. Keep the choices clear.\"[/blue][/sine]",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.ACCEPT_THE_DRAFT.title": "Accept the Draft",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.ACCEPT_THE_DRAFT.description": "Gain [blue]{Gold}[/blue] [gold]Gold[/gold]. Heal [green]{Heal}[/green] HP.",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.REVISE_THE_PROMPT.title": "Revise the Prompt",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.REVISE_THE_PROMPT.description": "[gold]Upgrade[/gold] a random card in your [gold]Deck[/gold].",
+  "AI_GENERATED_EVENT.pages.ACCEPT_THE_DRAFT.description": "You follow the draft exactly.\n\nThe scroll glows with quiet approval as a handful of [gold]coins[/gold] tumble into your palm. The words then soften into a warm [green]afterthought[/green] that settles into your chest, leaving you steadier than before.",
+  "AI_GENERATED_EVENT.pages.REVISE_THE_PROMPT.description": "You take a careful breath and edit the draft line by line.\n\nThe scroll trembles, resists, then finally yields. One of your ideas returns to you [jitter][gold]sharper[/gold][/jitter] than before.\n\nWhen you look down again, the vellum is blank."
+}

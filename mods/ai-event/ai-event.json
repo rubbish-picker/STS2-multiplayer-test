@@ -1,0 +1,11 @@
+{
+  "id": "ai-event",
+  "name": "ai-event",
+  "author": "User",
+  "description": "Prototype mod that injects an LLM-style event and includes prompt/data assets for generating STS2-flavored events.",
+  "version": "v0.1.0",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": ["BaseLib"],
+  "affects_gameplay": true
+}

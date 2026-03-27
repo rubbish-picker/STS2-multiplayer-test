@@ -1,0 +1,10 @@
+{
+  "AI_GENERATED_EVENT.title": "有帮助的草稿",
+  "AI_GENERATED_EVENT.pages.INITIAL.description": "一张[gold]羊皮卷[/gold]不知从何处飘落，正好落在你的手里。\n\n卷面上挤满了[aqua]结构清晰的条目[/aqua]、[purple]被划掉的修辞[/purple]，以及不断自行改写的高亮语句。\n\n在最下方，一行字缓缓浮现：\n[sine][blue]“保持尖塔的语气。让选项一目了然。”[/blue][/sine]",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.ACCEPT_THE_DRAFT.title": "接受草稿",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.ACCEPT_THE_DRAFT.description": "获得[blue]{Gold}[/blue][gold]金币[/gold]。回复[green]{Heal}[/green]点生命。",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.REVISE_THE_PROMPT.title": "修改提示词",
+  "AI_GENERATED_EVENT.pages.INITIAL.options.REVISE_THE_PROMPT.description": "[gold]升级[/gold]你[gold]牌组[/gold]中的一张随机牌。",
+  "AI_GENERATED_EVENT.pages.ACCEPT_THE_DRAFT.description": "你一字不改地照着草稿执行。\n\n卷轴发出安静的微光，像是在表示认可。几枚[gold]金币[/gold]落入你的掌心，而那些文字最后化成一缕[green]温和的余韵[/green]没入胸口，让你比刚才更安定了一些。",
+  "AI_GENERATED_EVENT.pages.REVISE_THE_PROMPT.description": "你深吸一口气，逐行修改那份草稿。\n\n卷轴微微震颤，像是在抗拒，随后终于屈服。你的某个念头以[jitter][gold]更锋利[/gold][/jitter]的姿态回到了脑海。\n\n当你再低头时，羊皮卷已经一片空白。"
+}
