@@ -1,7 +1,8 @@
 using Godot;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Modding;
 
 namespace AiEvent;
 
@@ -15,10 +16,16 @@ public partial class MainFile : Node
 
     public static void Initialize()
     {
-        ModelDb.Inject(typeof(AiGeneratedEvent));
-
         Harmony harmony = new(ModId);
         harmony.PatchAll();
+
+        AiEventConfigService.Initialize();
+        AiEventGenerationService.Initialize();
+        if (LocManager.Instance != null)
+        {
+            LocManager.Instance.SubscribeToLocaleChange(AiEventLocalization.ApplyCurrentLanguage);
+            AiEventLocalization.ApplyCurrentLanguage();
+        }
 
         Logger.Info("ai-event initialized.");
     }
