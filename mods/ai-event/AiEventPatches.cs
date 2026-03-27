@@ -3,6 +3,7 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
@@ -74,6 +75,15 @@ public static class AiEventPatches
         }
     }
 
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.Launch))]
+    private static class RunManagerLaunchPatch
+    {
+        private static void Postfix()
+        {
+            AiEventMultiplayerSync.InitializeForRun();
+        }
+    }
+
     [HarmonyPatch(typeof(NMainMenu), nameof(NMainMenu._Ready))]
     private static class MainMenuReadyPatch
     {
@@ -85,6 +95,45 @@ public static class AiEventPatches
         private static void Postfix(NMainMenu __instance)
         {
             AiEventMainMenuIntegration.FinalizeMenu(__instance);
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.Abandon))]
+    private static class RunManagerAbandonPatch
+    {
+        private static void Prefix()
+        {
+            AiEventRuntimeService.StopActiveRun("the player abandoned the in-progress run");
+            AiEventMultiplayerSync.Clear();
+        }
+    }
+
+    [HarmonyPatch(typeof(NMainMenu), nameof(NMainMenu.AbandonRun))]
+    private static class MainMenuAbandonRunPatch
+    {
+        private static void Prefix()
+        {
+            AiEventRuntimeService.StopActiveRun("the player abandoned the run from main menu");
+            AiEventMultiplayerSync.Clear();
+        }
+    }
+
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.NRun), nameof(MegaCrit.Sts2.Core.Nodes.NRun.ShowGameOverScreen))]
+    private static class ShowGameOverScreenPatch
+    {
+        private static void Prefix()
+        {
+            AiEventRuntimeService.StopActiveRun("the current run reached game over");
+            AiEventMultiplayerSync.Clear();
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+    private static class RunManagerCleanUpPatch
+    {
+        private static void Prefix()
+        {
+            AiEventMultiplayerSync.Clear();
         }
     }
 }

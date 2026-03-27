@@ -1,0 +1,18 @@
+[
+  {
+    "title": "The language should feel close to a real Slay the Spire 2 event.",
+    "notes": [
+      "Short atmospheric intro paragraphs",
+      "Concise option lines with clear costs and rewards",
+      "Result text should be brief and flavorful"
+    ]
+  },
+  {
+    "title": "Use markup intentionally",
+    "notes": [
+      "Highlight only important mechanics like [gold]Gold[/gold] or [red]HP[/red]",
+      "Do not over-tag every noun",
+      "Keep English and Chinese aligned in intent"
+    ]
+  }
+]

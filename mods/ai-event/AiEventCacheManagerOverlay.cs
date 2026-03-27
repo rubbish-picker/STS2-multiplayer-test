@@ -6,6 +6,8 @@ using Godot;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes.Events;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.addons.mega_text;
@@ -26,6 +28,10 @@ public partial class AiEventCacheManagerOverlay : Control
     private PanelContainer _previewHost = null!;
     private Button _previewCloseButton = null!;
 
+    private Control _busyOverlay = null!;
+    private Label _busyLabel = null!;
+    private bool _isBusy;
+
     private readonly List<AiEventPoolEntry> _entries = new();
     private string? _editingEntryId;
     private NEventRoom? _previewRoom;
@@ -43,9 +49,9 @@ public partial class AiEventCacheManagerOverlay : Control
 
     public void Open()
     {
-        RefreshEntries();
         Visible = true;
         MoveToFront();
+        _ = RefreshEntriesAsync();
     }
 
     private void BuildUi()
@@ -86,8 +92,8 @@ public partial class AiEventCacheManagerOverlay : Control
 
         root.AddChild(CreateHeaderRow());
 
-        _runStatsLabel = CreateRichText(string.Empty);
-        _runStatsLabel.CustomMinimumSize = new Vector2(0f, 86f);
+        _runStatsLabel = CreateRichText(string.Empty, 18);
+        _runStatsLabel.CustomMinimumSize = new Vector2(0f, 108f);
         _runStatsLabel.Visible = false;
         root.AddChild(_runStatsLabel);
 
@@ -96,7 +102,7 @@ public partial class AiEventCacheManagerOverlay : Control
 
         _statusLabel = new Label
         {
-            Text = "就绪",
+            Text = "就绪。",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         root.AddChild(_statusLabel);
@@ -106,6 +112,9 @@ public partial class AiEventCacheManagerOverlay : Control
 
         _previewModal = CreatePreviewModal();
         AddChild(_previewModal);
+
+        _busyOverlay = CreateBusyOverlay();
+        AddChild(_busyOverlay);
     }
 
     private Control CreateHeaderRow()
@@ -113,14 +122,12 @@ public partial class AiEventCacheManagerOverlay : Control
         HBoxContainer row = new();
         row.AddThemeConstantOverride("separation", 12);
 
-        MegaRichTextLabel title = CreateRichText("[b]AI事件缓存管理[/b]");
+        MegaRichTextLabel title = CreateRichText("[b]AI事件缓存管理[/b]", 24);
         title.CustomMinimumSize = new Vector2(0f, 52f);
         title.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         row.AddChild(title);
 
-        Button closeButton = CreateActionButton("关闭", CloseOverlay, 140f);
-        row.AddChild(closeButton);
-
+        row.AddChild(CreateActionButton("关闭", CloseOverlay, 140f));
         return row;
     }
 
@@ -129,12 +136,12 @@ public partial class AiEventCacheManagerOverlay : Control
         HBoxContainer row = new();
         row.AddThemeConstantOverride("separation", 10);
 
-        row.AddChild(CreateActionButton("刷新", RefreshEntries));
+        row.AddChild(CreateActionButton("刷新", () => _ = RefreshEntriesAsync()));
         row.AddChild(CreateActionButton("新建", CreateNewEntry));
 
         Label tip = new()
         {
-            Text = "左侧列表可直接查看、修改、删除缓存事件。",
+            Text = "列表支持查看、修改、删除。首次加载较大的缓存时会显示加载提示。",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             VerticalAlignment = VerticalAlignment.Center,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
@@ -267,6 +274,44 @@ public partial class AiEventCacheManagerOverlay : Control
         return modal;
     }
 
+    private Control CreateBusyOverlay()
+    {
+        Control overlay = new()
+        {
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Stop,
+        };
+        overlay.SetAnchorsPreset(LayoutPreset.FullRect);
+
+        ColorRect backdrop = new()
+        {
+            Color = new Color(0f, 0f, 0f, 0.55f),
+            MouseFilter = MouseFilterEnum.Stop,
+        };
+        backdrop.SetAnchorsPreset(LayoutPreset.FullRect);
+        overlay.AddChild(backdrop);
+
+        PanelContainer panel = new()
+        {
+            CustomMinimumSize = new Vector2(420f, 120f),
+        };
+        panel.SetAnchorsPreset(LayoutPreset.Center);
+        panel.Position = new Vector2(-210f, -60f);
+        overlay.AddChild(panel);
+
+        _busyLabel = new Label
+        {
+            Text = "加载中...",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        _busyLabel.SetAnchorsPreset(LayoutPreset.FullRect);
+        panel.AddChild(_busyLabel);
+
+        return overlay;
+    }
+
     private Button CreateActionButton(string text, Action action, float minWidth = 110f)
     {
         Button button = new()
@@ -278,7 +323,7 @@ public partial class AiEventCacheManagerOverlay : Control
         return button;
     }
 
-    private static MegaRichTextLabel CreateRichText(string text)
+    private static MegaRichTextLabel CreateRichText(string text, int fontSize)
     {
         Font normal = PreloadManager.Cache.GetAsset<Font>("res://themes/kreon_regular_shared.tres");
         Font bold = PreloadManager.Cache.GetAsset<Font>("res://themes/kreon_bold_shared.tres");
@@ -293,31 +338,49 @@ public partial class AiEventCacheManagerOverlay : Control
         };
         label.AddThemeFontOverride("normal_font", normal);
         label.AddThemeFontOverride("bold_font", bold);
-        label.AddThemeFontSizeOverride("normal_font_size", 24);
-        label.AddThemeFontSizeOverride("bold_font_size", 24);
-        label.AddThemeFontSizeOverride("italics_font_size", 24);
-        label.AddThemeFontSizeOverride("bold_italics_font_size", 24);
-        label.AddThemeFontSizeOverride("mono_font_size", 24);
+        label.AddThemeFontSizeOverride("normal_font_size", fontSize);
+        label.AddThemeFontSizeOverride("bold_font_size", fontSize);
+        label.AddThemeFontSizeOverride("italics_font_size", fontSize);
+        label.AddThemeFontSizeOverride("bold_italics_font_size", fontSize);
+        label.AddThemeFontSizeOverride("mono_font_size", fontSize);
         return label;
     }
 
-    private void RefreshEntries()
+    private async Task RefreshEntriesAsync()
     {
-        AiEventRepository.Initialize();
-
-        _entries.Clear();
-        _entries.AddRange(AiEventRepository.GetAllPoolEntries());
-
-        RefreshRunStats();
-        RebuildEntryRows();
-
-        if (_entries.Count == 0)
+        if (_isBusy)
         {
-            SetStatus("当前还没有缓存事件。");
             return;
         }
 
-        SetStatus($"已加载 {_entries.Count} 个缓存事件。");
+        SetBusy(true, "正在加载 AI 事件缓存...");
+
+        try
+        {
+            List<AiEventPoolEntry> loadedEntries = await Task.Run(() =>
+            {
+                AiEventRepository.Initialize();
+                return AiEventRepository.GetAllPoolEntries().ToList();
+            });
+
+            _entries.Clear();
+            _entries.AddRange(loadedEntries);
+
+            RefreshRunStats();
+            await RebuildEntryRowsAsync();
+
+            if (_entries.Count == 0)
+            {
+                SetStatus("当前还没有缓存事件。");
+                return;
+            }
+
+            SetStatus($"已加载 {_entries.Count} 个缓存事件。");
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
     private void RefreshRunStats()
@@ -332,14 +395,15 @@ public partial class AiEventCacheManagerOverlay : Control
 
         _runStatsLabel.Visible = true;
         _runStatsLabel.Text =
-            $"[b]当前进行中的存档[/b]  种子: {EscapeBb(stats.Seed)}\n" +
-            $"已经历 llm 事件数: [b]{stats.ExperiencedCount}[/b]    " +
-            $"已生成 llm 事件数: [b]{stats.GeneratedCount}[/b]    " +
-            $"待生成 llm 事件数: [b]{stats.PendingCount}[/b]    " +
-            $"后台生成状态: [b]{(stats.IsGenerating ? "生成中" : "未生成中")}[/b]";
+            $"[b]当前进行中的存档[/b]  Seed: {EscapeBb(stats.Seed)}\n" +
+            $"已经历 llm 事件数 [b]{stats.ExperiencedCount}[/b]    " +
+            $"已生成 llm 事件数 [b]{stats.GeneratedCount}[/b]    " +
+            $"待生成 llm 事件数 [b]{stats.PendingCount}[/b]    " +
+            $"已丢弃 [b]{stats.DiscardedCount}[/b]    " +
+            $"后台生成状态 [b]{(stats.IsGenerating ? "生成中" : "未生成中")}[/b]";
     }
 
-    private void RebuildEntryRows()
+    private async Task RebuildEntryRowsAsync()
     {
         foreach (Node child in _entryRows.GetChildren())
         {
@@ -357,9 +421,13 @@ public partial class AiEventCacheManagerOverlay : Control
             return;
         }
 
-        foreach (AiEventPoolEntry entry in _entries)
+        for (int i = 0; i < _entries.Count; i++)
         {
-            _entryRows.AddChild(CreateEntryRow(entry));
+            _entryRows.AddChild(CreateEntryRow(_entries[i]));
+            if ((i + 1) % 20 == 0)
+            {
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
         }
     }
 
@@ -392,19 +460,14 @@ public partial class AiEventCacheManagerOverlay : Control
         info.AddThemeConstantOverride("separation", 6);
         row.AddChild(info);
 
-        MegaRichTextLabel title = CreateRichText("[b]" + EscapeBb(GetDisplayTitle(entry)) + "[/b]");
+        MegaRichTextLabel title = CreateRichText("[b]" + EscapeBb(GetDisplayTitle(entry)) + "[/b]", 24);
         title.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         title.CustomMinimumSize = new Vector2(0f, 34f);
         info.AddChild(title);
 
-        MegaRichTextLabel meta = CreateRichText(EscapeBb(BuildRowMeta(entry)));
+        MegaRichTextLabel meta = CreateRichText(EscapeBb(BuildRowMeta(entry)), 18);
         meta.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         meta.CustomMinimumSize = new Vector2(0f, 48f);
-        meta.AddThemeFontSizeOverride("normal_font_size", 18);
-        meta.AddThemeFontSizeOverride("bold_font_size", 18);
-        meta.AddThemeFontSizeOverride("italics_font_size", 18);
-        meta.AddThemeFontSizeOverride("bold_italics_font_size", 18);
-        meta.AddThemeFontSizeOverride("mono_font_size", 18);
         info.AddChild(meta);
 
         HBoxContainer actions = new();
@@ -412,13 +475,9 @@ public partial class AiEventCacheManagerOverlay : Control
         actions.AddThemeConstantOverride("separation", 8);
         row.AddChild(actions);
 
-        Button previewButton = CreateActionButton("查看", () => _ = OpenPreviewAsync(entry), 96f);
-        Button editButton = CreateActionButton("修改", () => OpenEditModal(entry), 96f);
-        Button deleteButton = CreateActionButton("删除", () => DeleteEntry(entry.EntryId), 96f);
-
-        actions.AddChild(previewButton);
-        actions.AddChild(editButton);
-        actions.AddChild(deleteButton);
+        actions.AddChild(CreateActionButton("查看", () => _ = OpenPreviewAsync(entry), 96f));
+        actions.AddChild(CreateActionButton("修改", () => OpenEditModal(entry), 96f));
+        actions.AddChild(CreateActionButton("删除", () => _ = DeleteEntryAsync(entry.EntryId), 96f));
 
         return panel;
     }
@@ -463,15 +522,30 @@ public partial class AiEventCacheManagerOverlay : Control
         entry = NormalizeEntry(entry!);
         AiEventRepository.AddPoolEntry(entry);
         CloseEditModal();
-        RefreshEntries();
-        SetStatus($"已保存缓存事件: {GetDisplayTitle(entry)}");
+        _ = RefreshEntriesAsync();
+        SetStatus($"已保存缓存事件 {GetDisplayTitle(entry)}");
     }
 
-    private void DeleteEntry(string entryId)
+    private async Task DeleteEntryAsync(string entryId)
     {
-        AiEventRepository.DeletePoolEntry(entryId);
-        RefreshEntries();
-        SetStatus("已删除所选缓存事件。");
+        if (_isBusy)
+        {
+            return;
+        }
+
+        SetBusy(true, "正在删除缓存事件...");
+        try
+        {
+            await Task.Run(() => AiEventRepository.DeletePoolEntry(entryId));
+            _entries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            RefreshRunStats();
+            await RebuildEntryRowsAsync();
+            SetStatus("已删除所选缓存事件。");
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
     private async Task OpenPreviewAsync(AiEventPoolEntry entry)
@@ -505,7 +579,7 @@ public partial class AiEventCacheManagerOverlay : Control
             _previewCloseButton.MoveToFront();
 
             await ToSignal(GetTree().CreateTimer(0.35f), SceneTreeTimer.SignalName.Timeout);
-            _previewRoom?.Layout?.DisableEventOptions();
+            HookPreviewOptionButtons();
         }
         catch (Exception ex)
         {
@@ -536,6 +610,25 @@ public partial class AiEventCacheManagerOverlay : Control
         }
 
         _previewModal.Visible = false;
+    }
+
+    private void HookPreviewOptionButtons()
+    {
+        if (_previewRoom?.Layout == null)
+        {
+            return;
+        }
+
+        foreach (NEventOptionButton button in _previewRoom.Layout.OptionButtons)
+        {
+            if (button.GetMeta("ai_event_preview_close_hooked", false).AsBool())
+            {
+                continue;
+            }
+
+            button.Connect(NClickableControl.SignalName.Released, Callable.From<NButton>(_ => ClosePreviewModal()));
+            button.SetMeta("ai_event_preview_close_hooked", true);
+        }
     }
 
     private bool TryReadEditorEntry(out AiEventPoolEntry? entry, out string error)
@@ -584,6 +677,7 @@ public partial class AiEventCacheManagerOverlay : Control
         entry.GeneratedAtUtc = entry.GeneratedAtUtc == default ? DateTime.UtcNow : entry.GeneratedAtUtc;
         entry.Source = string.IsNullOrWhiteSpace(entry.Source) ? "manual" : entry.Source;
         entry.Seed ??= string.Empty;
+        entry.Theme ??= string.Empty;
         entry.Payload.EventKey = AiEventRegistry.GetEventKey(entry.Payload.Slot);
         entry.Payload.Eng ??= AiEventFallbacks.Create(entry.Payload.Slot).Eng;
         entry.Payload.Zhs ??= AiEventFallbacks.Create(entry.Payload.Slot).Zhs;
@@ -605,13 +699,14 @@ public partial class AiEventCacheManagerOverlay : Control
     {
         string slotName = AiEventRegistry.GetActName(entry.Payload.Slot);
         string source = FirstNonEmpty(entry.Source, "unknown");
+        string theme = FirstNonEmpty(entry.Theme, "未记录主题");
         string time = entry.GeneratedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
         string summary = FirstNonEmpty(
             entry.Payload.Zhs?.InitialDescription,
             entry.Payload.Eng?.InitialDescription,
             "无描述");
 
-        return $"区域: {slotName}  |  来源: {source}  |  时间: {time}\n{summary}";
+        return $"区域: {slotName}  |  来源: {source}  |  主题: {theme}  |  时间: {time}\n{summary}";
     }
 
     private static string BuildTooltip(AiEventPoolEntry entry)
@@ -629,6 +724,17 @@ public partial class AiEventCacheManagerOverlay : Control
     private void SetStatus(string text)
     {
         _statusLabel.Text = text;
+    }
+
+    private void SetBusy(bool isBusy, string text = "加载中...")
+    {
+        _isBusy = isBusy;
+        _busyLabel.Text = text;
+        _busyOverlay.Visible = isBusy;
+        if (isBusy)
+        {
+            _busyOverlay.MoveToFront();
+        }
     }
 
     private static string FirstNonEmpty(params string?[] values)

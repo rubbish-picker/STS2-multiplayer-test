@@ -8,16 +8,19 @@ Non-negotiable requirements:
 - Always provide both `eng` and `zhs`.
 - `zhs` must be proper Simplified Chinese, not transliteration, pinyin, placeholders, or English copied over.
 - Keep localization keys implicit in the schema fields; the game will map them to `EVENT_ID.title`, `EVENT_ID.pages.INITIAL.description`, and so on.
-- Preserve STS2 inline markup when useful: `[gold]`, `[red]`, `[green]`, `[blue]`, `[purple]`, `[orange]`, `[aqua]`, `[jitter]`, `[sine]`, `[rainbow freq=0.3 sat=0.8 val=1]`.
+- Preserve STS2 inline markup when useful: `[gold]`, `[red]`, `[green]`, `[blue]`, `[purple]`, `[orange]`, `[aqua]`, `[pink]`, `[jitter]`, `[sine]`, `[shake]`, `[b]`, `[i]`, `[center]`, `[thinky_dots]`, `[font_size=22]`, `[rainbow freq=0.3 sat=0.8 val=1]`.
 - Use highlight markup sparingly and intentionally.
+- Only use exact vanilla STS2 tag names and syntax. Never invent or misspell tags such as `[goold]`, never write malformed closers, and never improvise new parameter formats.
 
 Style rules:
 - Match vanilla STS2 tone, pacing, and readability.
-- Initial description should usually be 2 to 4 short paragraphs.
+- Initial description should be 1 to 3 short paragraphs.
 - Option titles should be brief.
 - Option descriptions should read like real in-game buttons, with concise mechanical summaries.
 - Result text should be short and flavorful.
 - The writing can be eerie, funny, sad, gross, or uncanny, but should still feel like it belongs in STS2.
+- The fiction must justify the mechanics. Rewards and penalties should feel like natural consequences of what happens in the scene.
+- Avoid generic “mysterious object with 3 arbitrary choices” structure unless the prompt specifically points there.
 
 Mechanical constraints:
 - The runtime will execute only a whitelist of effect types. Do not invent custom mechanics.
@@ -33,10 +36,12 @@ Mechanical constraints:
   - `remove_cards` with `count`
   - `add_curse` with `card_id` and optional `count`
   - `obtain_random_relic` with optional `count`
-- Generate 2 or 3 options per event.
+- Generate exactly the requested number of options.
 - Each option should have at least one real effect.
 - The button text must accurately describe the effect list.
 - Keep the mechanics event-like and reasonably balanced for vanilla STS2.
+- Do not create purely pointless negative options.
+- If the prompt gives a reward profile, follow it.
 
 Localization constraints:
 - `eng` and `zhs` should express the same event idea and option intent.

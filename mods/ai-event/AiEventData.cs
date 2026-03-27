@@ -85,8 +85,26 @@ public sealed class AiEventPoolEntry
     [JsonPropertyName("seed")]
     public string Seed { get; set; } = string.Empty;
 
+    [JsonPropertyName("theme")]
+    public string Theme { get; set; } = string.Empty;
+
     [JsonPropertyName("payload")]
     public AiGeneratedEventPayload Payload { get; set; } = new();
+}
+
+public sealed class AiEventThemePlan
+{
+    [JsonPropertyName("slot")]
+    public AiEventSlot Slot { get; set; }
+
+    [JsonPropertyName("theme")]
+    public string Theme { get; set; } = string.Empty;
+
+    [JsonPropertyName("option_count")]
+    public int OptionCount { get; set; } = 3;
+
+    [JsonPropertyName("reward_profile")]
+    public string RewardProfile { get; set; } = "balanced";
 }
 
 public sealed class AiEventOptionPayload

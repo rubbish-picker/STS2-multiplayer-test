@@ -36,14 +36,21 @@ public static class AiEventLocalization
             AiLocalizedEventText text = useChinese ? payload.Zhs : payload.Eng;
             string key = payload.EventKey;
 
-            table[$"{key}.title"] = text.Title;
-            table[$"{key}.pages.INITIAL.description"] = text.InitialDescription;
+            table[$"{key}.title"] = AiEventMarkup.SanitizeText(text.Title);
+            table[$"{key}.pages.INITIAL.description"] = AiEventMarkup.SanitizeText(text.InitialDescription);
 
-            foreach (AiLocalizedOptionText option in text.Options.Where(o => !string.IsNullOrWhiteSpace(o.Key)))
+            foreach ((AiLocalizedOptionText option, int index) in text.Options.Where(o => !string.IsNullOrWhiteSpace(o.Key)).Select((option, index) => (option, index)))
             {
-                table[$"{key}.pages.INITIAL.options.{option.Key}.title"] = option.Title;
-                table[$"{key}.pages.INITIAL.options.{option.Key}.description"] = option.Description;
-                table[$"{key}.pages.{option.Key}_RESULT.description"] = option.ResultDescription;
+                AiLocalizedOptionText normalizedOption = option;
+                AiEventOptionPayload? runtimeOption = payload.Options.ElementAtOrDefault(index);
+                if (runtimeOption != null)
+                {
+                    normalizedOption = AiEventEffectCatalog.NormalizeCurseTextFromEffects(option, runtimeOption, language);
+                }
+
+                table[$"{key}.pages.INITIAL.options.{option.Key}.title"] = AiEventMarkup.SanitizeText(normalizedOption.Title);
+                table[$"{key}.pages.INITIAL.options.{option.Key}.description"] = AiEventMarkup.SanitizeText(normalizedOption.Description);
+                table[$"{key}.pages.{option.Key}_RESULT.description"] = AiEventMarkup.SanitizeText(normalizedOption.ResultDescription);
             }
         }
 

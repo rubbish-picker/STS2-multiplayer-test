@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 
@@ -37,7 +38,7 @@ public static class AiEventGenerationService
             && !string.IsNullOrWhiteSpace(config.Model);
     }
 
-    public static async Task<string?> ValidateConnectivityAsync()
+    public static async Task<string?> ValidateConnectivityAsync(CancellationToken cancellationToken = default)
     {
         AiEventConfigService.Reload();
 
@@ -62,7 +63,8 @@ public static class AiEventGenerationService
                 "You are a connectivity probe for a Slay the Spire 2 mod. Reply with only OK.",
                 "Reply with only OK.",
                 Math.Min(Math.Max(15, AiEventConfigService.Current.RequestTimeoutSeconds), 20),
-                32);
+                32,
+                cancellationToken);
 
             if (string.IsNullOrWhiteSpace(response))
             {
@@ -78,31 +80,130 @@ public static class AiEventGenerationService
         return null;
     }
 
-    public static async Task<AiGeneratedEventPayload> GeneratePayloadAsync(AiEventSlot slot, string? seed)
+    public static async Task<List<AiEventThemePlan>> GenerateThemesAsync(IReadOnlyList<AiEventSlot> slots, string? seed, CancellationToken cancellationToken = default)
     {
-        (string systemPrompt, string schema, string samples) = ReadGenerationAssets();
-
-        string userPrompt =
-            $"Generate one Slay the Spire 2 style event JSON for slot `{slot}`.\n" +
-            $"The current run seed is `{seed ?? "UNKNOWN"}`.\n" +
-            "Generate a fully playable event with 2 or 3 options.\n" +
-            "You must generate BOTH the option text and the underlying rewards/costs.\n" +
-            "Only use supported effect types from the schema. Do not invent custom mechanics.\n" +
-            "Output both `eng` and `zhs` localized text, and keep the two versions aligned.\n" +
-            "Keep the event readable in-game and close to vanilla style.\n\n" +
-            "Schema:\n" + schema + "\n\n" +
-            "Vanilla samples:\n" + samples;
-
-        string rawContent = await SendChatCompletionAsync(systemPrompt, userPrompt);
-        AiGeneratedEventPayload? payload = DeserializePayload(rawContent);
-        if (payload == null)
+        if (slots.Count == 0)
         {
-            throw new InvalidOperationException("LLM returned empty payload.");
+            return new List<AiEventThemePlan>();
         }
 
-        NormalizePayload(payload, slot);
-        MainFile.Logger.Info($"Generated ai-event payload for {slot}.");
-        return payload;
+        try
+        {
+            string systemPrompt = "You design concise, distinct Slay the Spire 2 event themes. Return only JSON.";
+            string userPrompt =
+                "Generate one short, distinct theme plan for each requested Slay the Spire 2 event slot.\n" +
+                $"Run seed: `{seed ?? "UNKNOWN"}`.\n" +
+                "Return a JSON array. Every item must contain `slot`, `theme`, `option_count`, and `reward_profile`.\n" +
+                "Rules:\n" +
+                "- Themes must be mechanically and narratively distinct.\n" +
+                "- Keep each theme under 18 Chinese characters and under 10 English words worth of meaning.\n" +
+                "- Avoid repeating motifs like debt, bargains, tides, mirrors, books, or insects unless specifically required.\n" +
+                "- Make them sound like event premises, not card names.\n\n" +
+                "- `option_count` must be 2 or 3.\n" +
+                "- `reward_profile` must be one of: `gentle_positive`, `balanced`, `sharp_tradeoff`.\n" +
+                "- `gentle_positive` means every option is acceptable and at least one is clearly favorable.\n" +
+                "- `balanced` means options feel roughly even, with different costs and rewards.\n" +
+                "- `sharp_tradeoff` means the event has stronger upside/downside tension, but still no purely pointless negative option.\n\n" +
+                "Requested slots:\n" +
+                JsonSerializer.Serialize(slots);
+
+            string rawContent = await SendChatCompletionAsync(systemPrompt, userPrompt, cancellationToken: cancellationToken);
+            string json = ExtractJsonArray(rawContent);
+            List<AiEventThemePlan>? themes = JsonSerializer.Deserialize<List<AiEventThemePlan>>(json, JsonOptions);
+            if (themes == null || themes.Count == 0)
+            {
+                throw new InvalidOperationException("Theme generation returned no themes.");
+            }
+
+            List<AiEventThemePlan> normalized = new();
+            for (int i = 0; i < slots.Count; i++)
+            {
+                AiEventThemePlan? source = themes.ElementAtOrDefault(i);
+                string theme = source?.Theme?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(theme))
+                {
+                    theme = GetFallbackTheme(slots[i], i, seed);
+                }
+
+                normalized.Add(new AiEventThemePlan
+                {
+                    Slot = slots[i],
+                    Theme = theme,
+                    OptionCount = NormalizeOptionCount(source?.OptionCount ?? 0, seed, i),
+                    RewardProfile = NormalizeRewardProfile(source?.RewardProfile, seed, i),
+                });
+            }
+
+            return normalized;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            MainFile.Logger.Warn($"[ai-event] failed to generate themes, falling back to deterministic themes: {ex.Message}");
+            return slots.Select((slot, index) => new AiEventThemePlan
+            {
+                Slot = slot,
+                Theme = GetFallbackTheme(slot, index, seed),
+                OptionCount = NormalizeOptionCount(0, seed, index),
+                RewardProfile = NormalizeRewardProfile(null, seed, index),
+            }).ToList();
+        }
+    }
+
+    public static async Task<AiGeneratedEventPayload> GeneratePayloadAsync(
+        AiEventSlot slot,
+        string? seed,
+        string? theme = null,
+        int? optionCount = null,
+        string? rewardProfile = null,
+        IReadOnlyList<string>? recentTitles = null,
+        CancellationToken cancellationToken = default)
+    {
+        (string systemPrompt, string schema, string samples) = ReadGenerationAssets();
+        string requestContext = BuildEventRequestContext(slot, seed, theme, optionCount, rewardProfile, recentTitles, schema, samples);
+
+        string? lastError = null;
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string userPrompt = requestContext;
+            if (attempt > 0 && !string.IsNullOrWhiteSpace(lastError))
+            {
+                userPrompt +=
+                    "\n\nYour previous answer was rejected. Regenerate from scratch and follow these corrections exactly:\n" +
+                    lastError +
+                    "\nPay extra attention to JSON validity, supported effect types, legal curse card ids, and aligned option text.";
+            }
+
+            try
+            {
+                string rawContent = await SendChatCompletionAsync(systemPrompt, userPrompt, cancellationToken: cancellationToken);
+                AiGeneratedEventPayload? payload = DeserializePayload(rawContent);
+                if (payload == null)
+                {
+                    throw new InvalidOperationException("LLM returned empty payload.");
+                }
+
+                NormalizePayload(payload, slot);
+                if (TryValidatePayload(payload, out string validationError))
+                {
+                    MainFile.Logger.Info($"Generated ai-event payload for {slot}.");
+                    return payload;
+                }
+
+                lastError = validationError;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new InvalidOperationException($"Generated event failed validation after one retry. {lastError}");
     }
 
     private static void NormalizePayload(AiGeneratedEventPayload payload, AiEventSlot slot)
@@ -122,6 +223,7 @@ public static class AiEventGenerationService
 
         payload.Eng.Options = NormalizeLocalizedOptions(payload.Eng.Options, payload.Options, fallback.Eng.Options);
         payload.Zhs.Options = NormalizeLocalizedOptions(payload.Zhs.Options, payload.Options, fallback.Zhs.Options);
+        NormalizeLocalizedCurseMentions(payload);
     }
 
     private static List<AiEventOptionPayload> NormalizeRuntimeOptions(
@@ -192,7 +294,12 @@ public static class AiEventGenerationService
 
             int amount = Math.Max(0, effect.Amount);
             int count = Math.Clamp(effect.Count <= 0 ? 1 : effect.Count, 1, 10);
-            string cardId = (effect.CardId ?? string.Empty).Trim().ToUpperInvariant();
+            string rawCardId = (effect.CardId ?? string.Empty).Trim().ToUpperInvariant();
+            string cardId = rawCardId;
+            if (AiEventEffectCatalog.TryNormalizeCurseCardId(rawCardId, out string normalizedCardId))
+            {
+                cardId = normalizedCardId;
+            }
             string relicRarity = (effect.RelicRarity ?? string.Empty).Trim().ToLowerInvariant();
 
             if (AiEventEffectCatalog.RequiresAmount(type) && amount <= 0)
@@ -264,10 +371,304 @@ public static class AiEventGenerationService
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
 
+    private static void NormalizeLocalizedCurseMentions(AiGeneratedEventPayload payload)
+    {
+        for (int i = 0; i < payload.Options.Count; i++)
+        {
+            if (i < payload.Eng.Options.Count)
+            {
+                payload.Eng.Options[i] = AiEventEffectCatalog.NormalizeCurseTextFromEffects(payload.Eng.Options[i], payload.Options[i], "eng");
+            }
+
+            if (i < payload.Zhs.Options.Count)
+            {
+                payload.Zhs.Options[i] = AiEventEffectCatalog.NormalizeCurseTextFromEffects(payload.Zhs.Options[i], payload.Options[i], "zhs");
+            }
+        }
+    }
+
+    private static string BuildEventRequestContext(
+        AiEventSlot slot,
+        string? seed,
+        string? theme,
+        int? optionCount,
+        string? rewardProfile,
+        IReadOnlyList<string>? recentTitles,
+        string schema,
+        string samples)
+    {
+        string supportedCurses = string.Join(", ", AiEventEffectCatalog.GetSupportedCurseCardIds());
+        string avoidedTitles = recentTitles == null || recentTitles.Count == 0
+            ? "(none)"
+            : string.Join("; ", recentTitles.Where(static title => !string.IsNullOrWhiteSpace(title)).Take(12));
+        int plannedOptionCount = Math.Clamp(optionCount ?? 3, 2, 3);
+        string plannedRewardProfile = NormalizeRewardProfile(rewardProfile, seed, 0);
+
+        return
+            $"Generate one Slay the Spire 2 style event JSON for slot `{slot}`.\n" +
+            $"The current run seed is `{seed ?? "UNKNOWN"}`.\n" +
+            $"Theme for this event: `{theme ?? GetFallbackTheme(slot, 0, seed)}`.\n" +
+            $"Use exactly `{plannedOptionCount}` options.\n" +
+            $"Overall reward profile: `{plannedRewardProfile}`.\n" +
+            "A `gentle_positive` event should feel inviting; a `balanced` event should feel fair; a `sharp_tradeoff` event should feel tense but still worthwhile.\n" +
+            "You must generate BOTH the option text and the underlying rewards/costs.\n" +
+            "Only use supported effect types from the schema. Do not invent custom mechanics.\n" +
+            $"For `add_curse`, only use these card ids: {supportedCurses}.\n" +
+            "Do not use `CURSE_` prefixes in `card_id`.\n" +
+            "Output valid JSON only, with no markdown wrapper.\n" +
+            "Output both `eng` and `zhs` localized text, and keep the two versions aligned.\n" +
+            "Keep the event readable in-game and close to vanilla style.\n\n" +
+            "Important writing rules:\n" +
+            "- The opening description must be 1 to 3 short paragraphs, never longer than that.\n" +
+            "- The event fiction must naturally justify the rewards and costs. Do not bolt mechanics onto unrelated prose.\n" +
+            "- Option button text must accurately describe the exact effects.\n" +
+            "- Result text should feel like the consequence of that exact choice.\n" +
+            "- Never mention a curse, relic, card upgrade, healing, gold, or max HP change in text unless the effects really do that.\n" +
+            "- Only use vanilla STS2 inline markup tags. If you use tags, they must be exactly existing forms like [gold], [red], [blue], [green], [purple], [orange], [aqua], [pink], [jitter], [sine], [shake], [b], [i], [center], [thinky_dots], [font_size=22], or [rainbow freq=0.3 sat=0.8 val=1]. Never invent tags such as [goold] or malformed closing tags.\n" +
+            "- Avoid making all events read like the same 3-choice bargain.\n\n" +
+            "Avoid repeating or paraphrasing these recent generated event titles:\n" + avoidedTitles + "\n\n" +
+            "Schema:\n" + schema + "\n\n" +
+            "Vanilla samples:\n" + samples;
+    }
+
+    private static bool TryValidatePayload(AiGeneratedEventPayload payload, out string error)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Eng?.Title) || string.IsNullOrWhiteSpace(payload.Zhs?.Title))
+        {
+            error = "Both eng.title and zhs.title must be present and non-empty.";
+            return false;
+        }
+
+        if (!TryValidateMarkup(payload, out error))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Eng?.InitialDescription) || string.IsNullOrWhiteSpace(payload.Zhs?.InitialDescription))
+        {
+            error = "Both eng.initial_description and zhs.initial_description must be present and non-empty.";
+            return false;
+        }
+
+        if (!HasValidInitialDescriptionLength(payload.Eng.InitialDescription) || !HasValidInitialDescriptionLength(payload.Zhs.InitialDescription))
+        {
+            error = "Initial description must be 1 to 3 short paragraphs, close to vanilla event length.";
+            return false;
+        }
+
+        if (payload.Options == null || payload.Options.Count < 2 || payload.Options.Count > 3)
+        {
+            error = "The event must contain 2 or 3 runtime options.";
+            return false;
+        }
+
+        if (payload.Eng?.Options == null || payload.Zhs?.Options == null)
+        {
+            error = "Both eng.options and zhs.options must be present.";
+            return false;
+        }
+
+        if (payload.Eng.Options.Count != payload.Options.Count || payload.Zhs.Options.Count != payload.Options.Count)
+        {
+            error = "Localized option counts must exactly match runtime options count.";
+            return false;
+        }
+
+        for (int i = 0; i < payload.Options.Count; i++)
+        {
+            AiEventOptionPayload option = payload.Options[i];
+            if (option.Effects == null || option.Effects.Count == 0)
+            {
+                error = $"Option {i + 1} has no effects.";
+                return false;
+            }
+
+            foreach (AiEventEffectPayload effect in option.Effects)
+            {
+                if (!AiEventEffectCatalog.IsSupported(effect.Type))
+                {
+                    error = $"Unsupported effect type: {effect.Type}.";
+                    return false;
+                }
+
+                if (AiEventEffectCatalog.RequiresCardId(effect.Type) &&
+                    !AiEventEffectCatalog.TryNormalizeCurseCardId(effect.CardId, out _))
+                {
+                    error = $"Illegal curse card id `{effect.CardId}`. Use only supported ids without CURSE_ prefix.";
+                    return false;
+                }
+            }
+
+            AiLocalizedOptionText engOption = payload.Eng.Options[i];
+            AiLocalizedOptionText zhsOption = payload.Zhs.Options[i];
+            if (string.IsNullOrWhiteSpace(engOption.Title) || string.IsNullOrWhiteSpace(engOption.Description) || string.IsNullOrWhiteSpace(engOption.ResultDescription))
+            {
+                error = $"English option text for option {i + 1} is incomplete.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(zhsOption.Title) || string.IsNullOrWhiteSpace(zhsOption.Description) || string.IsNullOrWhiteSpace(zhsOption.ResultDescription))
+            {
+                error = $"Chinese option text for option {i + 1} is incomplete.";
+                return false;
+            }
+
+            if (!IsOptionWorthTaking(option))
+            {
+                error = $"Option {i + 1} is purely negative or lacks a meaningful upside, which does not fit vanilla event structure.";
+                return false;
+            }
+
+            if (!TryValidateOptionTextMatchesEffects(option, engOption, zhsOption, out error))
+            {
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool TryValidateMarkup(AiGeneratedEventPayload payload, out string error)
+    {
+        foreach ((string fieldName, string text) in EnumerateMarkupFields(payload))
+        {
+            if (AiEventMarkup.TryValidateText(text, out string markupError))
+            {
+                continue;
+            }
+
+            error = $"Field `{fieldName}` uses invalid STS2 markup. {markupError}";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static IEnumerable<(string FieldName, string Text)> EnumerateMarkupFields(AiGeneratedEventPayload payload)
+    {
+        yield return ("eng.title", payload.Eng.Title);
+        yield return ("eng.initial_description", payload.Eng.InitialDescription);
+        yield return ("zhs.title", payload.Zhs.Title);
+        yield return ("zhs.initial_description", payload.Zhs.InitialDescription);
+
+        for (int i = 0; i < payload.Eng.Options.Count; i++)
+        {
+            yield return ($"eng.options[{i}].title", payload.Eng.Options[i].Title);
+            yield return ($"eng.options[{i}].description", payload.Eng.Options[i].Description);
+            yield return ($"eng.options[{i}].result_description", payload.Eng.Options[i].ResultDescription);
+        }
+
+        for (int i = 0; i < payload.Zhs.Options.Count; i++)
+        {
+            yield return ($"zhs.options[{i}].title", payload.Zhs.Options[i].Title);
+            yield return ($"zhs.options[{i}].description", payload.Zhs.Options[i].Description);
+            yield return ($"zhs.options[{i}].result_description", payload.Zhs.Options[i].ResultDescription);
+        }
+    }
+
+    private static bool HasValidInitialDescriptionLength(string text)
+    {
+        string[] paragraphs = text
+            .Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (paragraphs.Length < 1 || paragraphs.Length > 3)
+        {
+            return false;
+        }
+
+        return paragraphs.All(paragraph => paragraph.Length <= 220);
+    }
+
+    private static bool IsOptionWorthTaking(AiEventOptionPayload option)
+    {
+        int score = 0;
+        bool hasPositive = false;
+
+        foreach (AiEventEffectPayload effect in option.Effects)
+        {
+            switch (effect.Type)
+            {
+                case "gain_gold":
+                case "heal":
+                case "gain_max_hp":
+                case "upgrade_cards":
+                case "upgrade_random":
+                case "remove_cards":
+                case "obtain_random_relic":
+                    score += 2;
+                    hasPositive = true;
+                    break;
+                case "lose_gold":
+                case "damage_self":
+                case "lose_max_hp":
+                case "add_curse":
+                    score -= 1;
+                    break;
+            }
+        }
+
+        return hasPositive || score >= 0;
+    }
+
+    private static bool TryValidateOptionTextMatchesEffects(
+        AiEventOptionPayload option,
+        AiLocalizedOptionText engOption,
+        AiLocalizedOptionText zhsOption,
+        out string error)
+    {
+        string engText = $"{engOption.Title} {engOption.Description} {engOption.ResultDescription}".ToLowerInvariant();
+        string zhsText = $"{zhsOption.Title} {zhsOption.Description} {zhsOption.ResultDescription}";
+
+        foreach (AiEventEffectPayload effect in option.Effects)
+        {
+            if (!EffectLooksMentioned(effect, engText, zhsText))
+            {
+                error = $"Option `{option.Key}` text does not appear to match effect `{effect.Type}` closely enough.";
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool EffectLooksMentioned(AiEventEffectPayload effect, string engText, string zhsText)
+    {
+        static bool HasAny(string text, params string[] needles) => needles.Any(text.Contains);
+
+        return effect.Type switch
+        {
+            "gain_gold" or "lose_gold" => HasAny(engText, "gold", "coin") || HasAny(zhsText, "金币", "金钱", "钱"),
+            "heal" => HasAny(engText, "heal", "recover", "hp") || HasAny(zhsText, "回复", "恢复", "治疗", "生命"),
+            "damage_self" => HasAny(engText, "lose", "damage", "hp", "bleed", "blood") || HasAny(zhsText, "失去", "受到", "生命", "流血", "血"),
+            "gain_max_hp" or "lose_max_hp" => HasAny(engText, "max hp", "maximum hp") || HasAny(zhsText, "最大生命"),
+            "upgrade_cards" or "upgrade_random" => HasAny(engText, "upgrade") || HasAny(zhsText, "升级"),
+            "remove_cards" => HasAny(engText, "remove", "purge") || HasAny(zhsText, "移除", "删除"),
+            "obtain_random_relic" => HasAny(engText, "relic") || HasAny(zhsText, "遗物"),
+            "add_curse" => HasAny(engText, "curse", effect.CardId.ToLowerInvariant()) ||
+                           HasAny(zhsText, "诅咒", "懊悔", "羞愧", "笨拙", "疑虑", "腐坏", "受伤", "贪婪", "愚行"),
+            _ => true,
+        };
+    }
+
     private static AiGeneratedEventPayload? DeserializePayload(string rawContent)
     {
         string json = ExtractJsonObject(rawContent);
         return JsonSerializer.Deserialize<AiGeneratedEventPayload>(json, JsonOptions);
+    }
+
+    private static string ExtractJsonArray(string rawContent)
+    {
+        int start = rawContent.IndexOf('[');
+        int end = rawContent.LastIndexOf(']');
+        if (start < 0 || end < start)
+        {
+            return rawContent;
+        }
+
+        return rawContent.Substring(start, end - start + 1);
     }
 
     private static string ExtractJsonObject(string rawContent)
@@ -301,7 +702,8 @@ public static class AiEventGenerationService
         string systemPrompt,
         string userPrompt,
         int? timeoutSecondsOverride = null,
-        int? maxTokensOverride = null)
+        int? maxTokensOverride = null,
+        CancellationToken cancellationToken = default)
     {
         AiEventRuntimeConfig config = AiEventConfigService.Current;
         using System.Net.Http.HttpClient client = new()
@@ -336,8 +738,8 @@ public static class AiEventGenerationService
         byte[] jsonBytes = Encoding.UTF8.GetBytes(requestBody.ToJsonString());
         request.Content = new ByteArrayContent(jsonBytes);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        using HttpResponseMessage response = await client.SendAsync(request);
-        string responseText = await response.Content.ReadAsStringAsync();
+        using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
+        string responseText = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
@@ -375,6 +777,79 @@ public static class AiEventGenerationService
         }
 
         return messageContentNode.ToJsonString();
+    }
+
+    private static string GetFallbackTheme(AiEventSlot slot, int index, string? seed)
+    {
+        string[] themes = slot switch
+        {
+            AiEventSlot.Overgrowth => new[]
+            {
+                "吞噬性的丰收",
+                "会呼吸的祭坛",
+                "寄生的馈赠",
+                "发芽的契约",
+                "腐叶下的承诺",
+            },
+            AiEventSlot.Hive => new[]
+            {
+                "过度整齐的分工",
+                "蜂巢税契",
+                "琥珀里的命令",
+                "幼虫保管人",
+                "错位的群体意志",
+            },
+            AiEventSlot.Glory => new[]
+            {
+                "夸耀的代价",
+                "镀金的忏悔",
+                "仪式化的喝彩",
+                "虚荣陈列柜",
+                "荣耀借据",
+            },
+            AiEventSlot.Underdocks => new[]
+            {
+                "潮水记录员",
+                "浸水的赎买",
+                "锈蚀船票",
+                "雾港对赌",
+                "沉底的清单",
+            },
+            _ => new[]
+            {
+                "不该出现的旁观者",
+                "交换条件外的附注",
+                "迟来的见证",
+                "误投的贡品",
+                "被删去的一页",
+            },
+        };
+
+        int offset = Math.Abs(HashCode.Combine(slot, seed ?? string.Empty, index));
+        return themes[offset % themes.Length];
+    }
+
+    private static int NormalizeOptionCount(int optionCount, string? seed, int index)
+    {
+        if (optionCount is 2 or 3)
+        {
+            return optionCount;
+        }
+
+        return Math.Abs(HashCode.Combine(seed ?? string.Empty, index)) % 2 == 0 ? 2 : 3;
+    }
+
+    private static string NormalizeRewardProfile(string? rewardProfile, string? seed, int index)
+    {
+        string normalized = (rewardProfile ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized is "gentle_positive" or "balanced" or "sharp_tradeoff")
+        {
+            return normalized;
+        }
+
+        string[] fallbacks = { "gentle_positive", "balanced", "sharp_tradeoff" };
+        int offset = Math.Abs(HashCode.Combine(seed ?? string.Empty, index, rewardProfile ?? string.Empty));
+        return fallbacks[offset % fallbacks.Length];
     }
 
     private static int GetSafeMaxOutputTokens(int configuredValue)

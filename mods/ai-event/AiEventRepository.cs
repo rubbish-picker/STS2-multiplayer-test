@@ -96,6 +96,7 @@ public static class AiEventRepository
             GeneratedAtUtc = DateTime.UtcNow,
             Source = source,
             Seed = seed ?? string.Empty,
+            Theme = string.Empty,
             Payload = clonedPayload,
         };
     }
@@ -342,6 +343,7 @@ public static class AiEventRepository
                 GeneratedAtUtc = entry.GeneratedAtUtc == default ? DateTime.UtcNow : entry.GeneratedAtUtc,
                 Source = string.IsNullOrWhiteSpace(entry.Source) ? "unknown" : entry.Source,
                 Seed = entry.Seed ?? string.Empty,
+                Theme = entry.Theme ?? string.Empty,
                 Payload = payload,
             });
         }

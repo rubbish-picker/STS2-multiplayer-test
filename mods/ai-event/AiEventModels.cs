@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Factories;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.ValueProps;
@@ -30,8 +31,9 @@ public abstract class AiGeneratedRegionEvent : EventModel
         {
             string optionKey = optionPayload.Key;
             string textKey = $"{base.Id.Entry}.pages.INITIAL.options.{optionKey}";
+            List<IHoverTip> hoverTips = BuildHoverTips(optionPayload);
 
-            EventOption option = new(this, () => ChooseOptionAsync(optionPayload), textKey);
+            EventOption option = new(this, () => ChooseOptionAsync(optionPayload), textKey, hoverTips);
 
             int damage = optionPayload.Effects
                 .Where(e => e.Type == "damage_self")
@@ -53,6 +55,29 @@ public abstract class AiGeneratedRegionEvent : EventModel
         }
 
         return options;
+    }
+
+    private static List<IHoverTip> BuildHoverTips(AiEventOptionPayload optionPayload)
+    {
+        List<IHoverTip> hoverTips = new();
+        foreach (AiEventEffectPayload effect in optionPayload.Effects)
+        {
+            if (!string.Equals(effect.Type, "add_curse", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            CardModel? curse = AiEventEffectCatalog.TryGetCurseCard(effect.CardId);
+            if (curse == null)
+            {
+                continue;
+            }
+
+            hoverTips.Add(HoverTipFactory.FromCard(curse));
+            hoverTips.AddRange(curse.HoverTips);
+        }
+
+        return hoverTips;
     }
 
     private async Task ChooseOptionAsync(AiEventOptionPayload optionPayload)

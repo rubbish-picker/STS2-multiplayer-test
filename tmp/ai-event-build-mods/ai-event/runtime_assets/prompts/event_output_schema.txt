@@ -1,0 +1,62 @@
+{
+  "options": [
+    {
+      "key": "OPTION_A",
+      "effects": [
+        {
+          "type": "gain_gold",
+          "amount": 40
+        },
+        {
+          "type": "heal",
+          "amount": 7
+        }
+      ]
+    },
+    {
+      "key": "OPTION_B",
+      "effects": [
+        {
+          "type": "upgrade_cards",
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "eng": {
+    "title": "Event title",
+    "initial_description": "2 to 4 short paragraphs with STS2-style markup when useful.",
+    "options": [
+      {
+        "key": "OPTION_A",
+        "title": "Option title",
+        "description": "Gain [blue]40[/blue] [gold]Gold[/gold]. [green]Heal 7[/green] HP.",
+        "result_description": "Result text after option A."
+      },
+      {
+        "key": "OPTION_B",
+        "title": "Option title",
+        "description": "[gold]Upgrade[/gold] a card in your [gold]Deck[/gold].",
+        "result_description": "Result text after option B."
+      }
+    ]
+  },
+  "zhs": {
+    "title": "事件标题",
+    "initial_description": "2 到 4 段短文，风格接近原版事件。",
+    "options": [
+      {
+        "key": "OPTION_A",
+        "title": "选项标题",
+        "description": "获得[blue]40[/blue][gold]金币[/gold]。回复[green]7[/green]点生命。",
+        "result_description": "选择选项 A 后的结果文本。"
+      },
+      {
+        "key": "OPTION_B",
+        "title": "选项标题",
+        "description": "[gold]升级[/gold]你[gold]牌组[/gold]中的一张卡牌。",
+        "result_description": "选择选项 B 后的结果文本。"
+      }
+    ]
+  }
+}
