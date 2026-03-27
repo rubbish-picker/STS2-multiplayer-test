@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace AiEvent;
 
@@ -33,6 +34,7 @@ public static class AiEventRepository
         {
             LoadActiveCache();
             LoadPool();
+            PromoteInactiveDynamicEntriesToCacheInternal(GetActiveRunSeedFromSessionState());
             NormalizeActivePayloads();
             EnsureAllSlots();
             RewriteReadableJsonIfNeeded();
@@ -190,6 +192,11 @@ public static class AiEventRepository
 
         lock (SyncRoot)
         {
+            if (_poolEntries.Count == 0 && File.Exists(PoolPath))
+            {
+                LoadPool();
+            }
+
             int changed = 0;
             foreach (AiEventPoolEntry entry in _poolEntries)
             {
@@ -213,6 +220,52 @@ public static class AiEventRepository
             }
 
             return changed;
+        }
+    }
+
+    private static string? GetActiveRunSeedFromSessionState()
+    {
+        try
+        {
+            string sessionStatePath = Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.run_session.json");
+            if (!File.Exists(sessionStatePath))
+            {
+                return null;
+            }
+
+            JsonNode? node = JsonNode.Parse(File.ReadAllText(sessionStatePath));
+            string? seed = node?["Seed"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(seed) ? null : seed;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to inspect ai-event run session state for stale dynamic cleanup: {ex}");
+            return null;
+        }
+    }
+
+    private static void PromoteInactiveDynamicEntriesToCacheInternal(string? activeSeed)
+    {
+        int changed = 0;
+        foreach (AiEventPoolEntry entry in _poolEntries)
+        {
+            if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(activeSeed) && string.Equals(entry.Seed, activeSeed, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            entry.Source = "llm_cache";
+            changed++;
+        }
+
+        if (changed > 0)
+        {
+            SavePoolInternal();
         }
     }
 
