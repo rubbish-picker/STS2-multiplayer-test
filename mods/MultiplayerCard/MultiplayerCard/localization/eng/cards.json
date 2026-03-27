@@ -1,6 +1,6 @@
 {
   "MULTIPLAYERCARD-ZERO_SUM.title": "Pressure On You",
-  "MULTIPLAYERCARD-ZERO_SUM.description": "Gain {Energy:energyIcons()}.\nAll teammates lose {DrainEnergy:energyIcons()} and add 1 [gold]Guilty[/gold] into your [gold]Hand[/gold] for each teammate affected.",
+  "MULTIPLAYERCARD-ZERO_SUM.description": "Gain {Energy:energyIcons()}.\nA teammate loses {DrainEnergy:energyIcons()}.\nAdd 1 [gold]Guilty[/gold] into your [gold]Hand[/gold].",
   "MULTIPLAYERCARD-YOU_SO_SELFISH.title": "Why Are You So Selfish",
-  "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "Gain {IfUpgraded:show:6|3} Strength.\nAll teammates lose 3 HP{IfUpgraded:show: and 3 Max HP|}."
+  "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "Gain {IfUpgraded:show:6|3} Strength.\nA teammate loses 3 HP{IfUpgraded:show: and 3 Max HP|}."
 }

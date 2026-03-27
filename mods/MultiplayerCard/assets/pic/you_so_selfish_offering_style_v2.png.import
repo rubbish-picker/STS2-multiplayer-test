@@ -2,16 +2,12 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bkne0iwif676l"
-path="res://.godot/imported/hateyou.png-4471958cbe220a6e3b08dc229abd35cc.ctex"
-metadata={
-"vram_texture": false
-}
+uid="uid://dkqcdbulq8ugu"
+valid=false
 
 [deps]
 
-source_file="res://MultiplayerCard/images/card_portraits/hateyou.png"
-dest_files=["res://.godot/imported/hateyou.png-4471958cbe220a6e3b08dc229abd35cc.ctex"]
+source_file="res://assets/pic/you_so_selfish_offering_style_v2.png"
 
 [params]
 

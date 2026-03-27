@@ -3,8 +3,8 @@ namespace MultiplayerCard.Extensions;
 public static class StringExtensions
 {
     public static string CardImagePath(this string path) =>
-        Path.Join(MainFile.ModId, "images", "card_portraits", path);
+        "res://" + Path.Join(MainFile.ModId, "images", "card_portraits", path).Replace("\\", "/");
 
     public static string BigCardImagePath(this string path) =>
-        Path.Join(MainFile.ModId, "images", "card_portraits", "big", path);
+        "res://" + Path.Join(MainFile.ModId, "images", "card_portraits", "big", path).Replace("\\", "/");
 }

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System;
 using BaseLib.Abstracts;
 using BaseLib.Utils;
 using MegaCrit.Sts2.Core.Commands;
@@ -23,6 +24,8 @@ public sealed class YouSoSelfish : CustomCardModel
     private const string TeammateMaxHpLossKey = "TeammateMaxHpLoss";
     private const string PortraitFileName = "hateyou.png";
 
+    public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;
+
     protected override IEnumerable<DynamicVar> CanonicalVars =>
         new DynamicVar[]
         {
@@ -34,40 +37,31 @@ public sealed class YouSoSelfish : CustomCardModel
     protected override IEnumerable<IHoverTip> ExtraHoverTips =>
         new[] { HoverTipFactory.FromPower<StrengthPower>() };
 
-    public override string? CustomPortraitPath => PortraitFileName.CardImagePath().Replace("\\", "/");
+    public override string PortraitPath => PortraitFileName.CardImagePath();
+
+    public override string? CustomPortraitPath => PortraitPath;
 
     public YouSoSelfish()
-        : base(0, CardType.Skill, CardRarity.Uncommon, TargetType.Self)
+        : base(0, CardType.Skill, CardRarity.Uncommon, TargetType.AnyAlly)
     {
     }
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        if (base.CombatState == null)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(cardPlay.Target, nameof(cardPlay.Target));
 
         await PowerCmd.Apply<StrengthPower>(base.Owner.Creature, base.DynamicVars.Strength.IntValue, base.Owner.Creature, this);
+        await CreatureCmd.Damage(
+            choiceContext,
+            cardPlay.Target,
+            base.DynamicVars[TeammateHpLossKey].IntValue,
+            ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move,
+            base.Owner.Creature,
+            this);
 
-        IEnumerable<Player> teammates = base.CombatState.Players.Where(player =>
-            player != base.Owner &&
-            player.Creature.IsAlive);
-
-        foreach (Player teammate in teammates)
+        if (base.IsUpgraded)
         {
-            await CreatureCmd.Damage(
-                choiceContext,
-                teammate.Creature,
-                base.DynamicVars[TeammateHpLossKey].IntValue,
-                ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move,
-                base.Owner.Creature,
-                this);
-
-            if (base.IsUpgraded)
-            {
-                await CreatureCmd.LoseMaxHp(choiceContext, teammate.Creature, base.DynamicVars[TeammateMaxHpLossKey].IntValue, isFromCard: true);
-            }
+            await CreatureCmd.LoseMaxHp(choiceContext, cardPlay.Target, base.DynamicVars[TeammateMaxHpLossKey].IntValue, isFromCard: true);
         }
     }
 

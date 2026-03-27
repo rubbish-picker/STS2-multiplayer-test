@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bkne0iwif676l"
-path="res://.godot/imported/hateyou.png-4471958cbe220a6e3b08dc229abd35cc.ctex"
+uid="uid://deug1pp6jsde7"
+path="res://.godot/imported/zero_sum.png-20e411fdc35e0cb55f1731fd8d6944c2.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://MultiplayerCard/images/card_portraits/hateyou.png"
-dest_files=["res://.godot/imported/hateyou.png-4471958cbe220a6e3b08dc229abd35cc.ctex"]
+source_file="res://assets/pic/zero_sum.png"
+dest_files=["res://.godot/imported/zero_sum.png-20e411fdc35e0cb55f1731fd8d6944c2.ctex"]
 
 [params]
 
