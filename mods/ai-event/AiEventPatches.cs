@@ -103,7 +103,7 @@ public static class AiEventPatches
     {
         private static void Prefix()
         {
-            AiEventRuntimeService.StopActiveRun("the player abandoned the in-progress run");
+            AiEventRuntimeService.StopActiveRun("the player abandoned the in-progress run", finalizeDynamicEntries: true);
             AiEventMultiplayerSync.Clear();
         }
     }
@@ -113,7 +113,7 @@ public static class AiEventPatches
     {
         private static void Prefix()
         {
-            AiEventRuntimeService.StopActiveRun("the player abandoned the run from main menu");
+            AiEventRuntimeService.StopActiveRun("the player abandoned the run from main menu", finalizeDynamicEntries: true);
             AiEventMultiplayerSync.Clear();
         }
     }
@@ -123,7 +123,7 @@ public static class AiEventPatches
     {
         private static void Prefix()
         {
-            AiEventRuntimeService.StopActiveRun("the current run reached game over");
+            AiEventRuntimeService.StopActiveRun("the current run reached game over", finalizeDynamicEntries: true);
             AiEventMultiplayerSync.Clear();
         }
     }

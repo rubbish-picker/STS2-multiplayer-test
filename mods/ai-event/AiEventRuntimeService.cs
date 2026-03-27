@@ -13,6 +13,10 @@ namespace AiEvent;
 
 public static class AiEventRuntimeService
 {
+    private const string DynamicTitlePrefix = "[lb]llm dynamic[rb]";
+    private const string CacheTitlePrefix = "[lb]llm cache[rb]";
+    private const int DynamicGenerationConcurrency = 5;
+
     private static readonly object SyncRoot = new();
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -108,12 +112,20 @@ public static class AiEventRuntimeService
             return vanillaEvent;
         }
 
+        AiEventSelectionDecision? assignedDecision = GetAssignedDecision(runState);
+        if (assignedDecision.HasValue)
+        {
+            BroadcastIfHost(assignedDecision.Value);
+            return ApplySelectionDecision(assignedDecision.Value, vanillaEvent);
+        }
+
         List<AiEventSlot> allowedSlots = new() { actSlot.Value, AiEventSlot.Shared };
         IReadOnlyList<AiEventPoolEntry> cachedCandidates = AiEventRepository.GetLatestPoolEntries(allowedSlots, AiEventConfigService.Current.CachePoolLimit);
 
         if (mode == AiEventMode.VanillaPlusCache)
         {
             AiEventSelectionDecision decision = TryChooseCachedOrVanilla(runState, cachedCandidates);
+            RememberAssignedDecision(runState, decision);
             BroadcastIfHost(decision);
             return ApplySelectionDecision(decision, vanillaEvent);
         }
@@ -123,7 +135,8 @@ public static class AiEventRuntimeService
         {
             if (session != null && TryTakeDynamicEntry(session, allowedSlots, out AiEventPoolEntry? debugEntry))
             {
-                AiEventSelectionDecision decision = CreateDecision(debugEntry!, "[llm dynamic]");
+                AiEventSelectionDecision decision = CreateDecision(debugEntry!, DynamicTitlePrefix);
+                RememberAssignedDecision(runState, decision);
                 BroadcastIfHost(decision);
                 return ApplySelectionDecision(decision, vanillaEvent);
             }
@@ -134,6 +147,7 @@ public static class AiEventRuntimeService
         }
 
         AiEventSelectionDecision finalDecision = TryChooseDynamicCacheOrVanilla(runState, session, allowedSlots, cachedCandidates);
+        RememberAssignedDecision(runState, finalDecision);
         BroadcastIfHost(finalDecision);
         return ApplySelectionDecision(finalDecision, vanillaEvent);
     }
@@ -149,12 +163,14 @@ public static class AiEventRuntimeService
         return AiEventConfigService.GetMode() == AiEventMode.LlmDebug;
     }
 
-    public static void StopActiveRun(string reason)
+    public static void StopActiveRun(string reason, bool finalizeDynamicEntries)
     {
+        AiEventRunSession? endingSession = null;
         lock (SyncRoot)
         {
             if (_currentSession != null)
             {
+                endingSession = _currentSession;
                 lock (_currentSession.SyncRoot)
                 {
                     _currentSession.IsGenerating = false;
@@ -176,6 +192,19 @@ public static class AiEventRuntimeService
         catch (Exception ex)
         {
             MainFile.Logger.Error($"[ai-event] failed to clear run session state while stopping run: {ex}");
+        }
+
+        if (finalizeDynamicEntries && endingSession != null)
+        {
+            try
+            {
+                int promoted = AiEventRepository.PromoteSeedDynamicEntriesToCache(endingSession.Seed);
+                MainFile.Logger.Info($"[ai-event] finalized run seed {endingSession.Seed}; promoted {promoted} dynamic event(s) into llm cache.");
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Error($"[ai-event] failed to finalize dynamic events for seed {endingSession.Seed}: {ex}");
+            }
         }
 
         MainFile.Logger.Info($"[ai-event] stopped active generation because {reason}.");
@@ -290,7 +319,7 @@ public static class AiEventRuntimeService
         {
             Random random = CreateSelectionRandom(runState);
             AiEventPoolEntry chosen = cachedCandidates[random.Next(cachedCandidates.Count)];
-            return CreateDecision(chosen, "[llm cache]");
+            return CreateDecision(chosen, CacheTitlePrefix);
         }
 
         return VanillaDecision;
@@ -302,10 +331,11 @@ public static class AiEventRuntimeService
         IReadOnlyList<AiEventSlot> allowedSlots,
         IReadOnlyList<AiEventPoolEntry> cachedCandidates)
     {
+        IReadOnlyList<AiEventPoolEntry> filteredCachedCandidates = FilterCacheCandidatesForDynamicMode(session, cachedCandidates);
         double dynamicWeight = session != null && HasDynamicEntry(session, allowedSlots)
             ? Math.Max(0d, AiEventConfigService.Current.DynamicWeight)
             : 0d;
-        double cacheWeight = cachedCandidates.Count > 0
+        double cacheWeight = filteredCachedCandidates.Count > 0
             ? Math.Max(0d, AiEventConfigService.Current.CacheWeight)
             : 0d;
         double vanillaWeight = Math.Max(0d, AiEventConfigService.Current.VanillaWeight);
@@ -316,18 +346,18 @@ public static class AiEventRuntimeService
             case "dynamic":
                 if (session != null && TryTakeDynamicEntry(session, allowedSlots, out AiEventPoolEntry? dynamicEntry))
                 {
-                    return CreateDecision(dynamicEntry!, "[llm dynamic]");
+                    return CreateDecision(dynamicEntry!, DynamicTitlePrefix);
                 }
 
                 MainFile.Logger.Warn($"[ai-event] dynamic event fallback to vanilla in act {runState.Act.Id.Entry} because no generated event was ready.");
                 return VanillaDecision;
 
             case "cache":
-                if (cachedCandidates.Count > 0)
+                if (filteredCachedCandidates.Count > 0)
                 {
                     Random random = CreateSelectionRandom(runState);
-                    AiEventPoolEntry cachedEntry = cachedCandidates[random.Next(cachedCandidates.Count)];
-                    return CreateDecision(cachedEntry, "[llm cache]");
+                    AiEventPoolEntry cachedEntry = filteredCachedCandidates[random.Next(filteredCachedCandidates.Count)];
+                    return CreateDecision(cachedEntry, CacheTitlePrefix);
                 }
 
                 return VanillaDecision;
@@ -363,6 +393,50 @@ public static class AiEventRuntimeService
         }
 
         return ActivatePayload(decision.Payload);
+    }
+
+    private static AiEventSelectionDecision? GetAssignedDecision(RunState runState)
+    {
+        AiEventRunSession? session = GetCurrentSession(runState.Rng.StringSeed);
+        if (session == null)
+        {
+            return null;
+        }
+
+        string locationKey = GetLocationKey(runState.CurrentLocation);
+        lock (session.SyncRoot)
+        {
+            if (!session.AssignedSelections.TryGetValue(locationKey, out AiEventSelectionDecisionState? state))
+            {
+                return null;
+            }
+
+            return state.ToDecision();
+        }
+    }
+
+    private static void RememberAssignedDecision(RunState runState, AiEventSelectionDecision decision)
+    {
+        AiEventRunSession? session = GetCurrentSession(runState.Rng.StringSeed);
+        if (session == null)
+        {
+            return;
+        }
+
+        string locationKey = GetLocationKey(runState.CurrentLocation);
+        lock (session.SyncRoot)
+        {
+            session.AssignedSelections[locationKey] = AiEventSelectionDecisionState.FromDecision(decision);
+        }
+
+        SaveSessionState(session);
+    }
+
+    private static string GetLocationKey(RunLocation location)
+    {
+        return location.coord.HasValue
+            ? $"{location.actIndex}:{location.coord.Value.col},{location.coord.Value.row}"
+            : $"{location.actIndex}:null";
     }
 
     private static string RollSource(RunState runState, double dynamicWeight, double cacheWeight, double vanillaWeight)
@@ -478,6 +552,21 @@ public static class AiEventRuntimeService
             : $"{prefix} {title}";
     }
 
+    private static IReadOnlyList<AiEventPoolEntry> FilterCacheCandidatesForDynamicMode(
+        AiEventRunSession? session,
+        IReadOnlyList<AiEventPoolEntry> cachedCandidates)
+    {
+        if (session == null)
+        {
+            return cachedCandidates;
+        }
+
+        return cachedCandidates
+            .Where(entry => !(string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase)
+                              && string.Equals(entry.Seed, session.Seed, StringComparison.Ordinal)))
+            .ToList();
+    }
+
     private static bool HasDynamicEntry(AiEventRunSession session, IReadOnlyList<AiEventSlot> allowedSlots)
     {
         lock (session.SyncRoot)
@@ -567,7 +656,51 @@ public static class AiEventRuntimeService
                 return;
             }
 
-            List<AiGeneratedEventPayload> generatedPayloads = new();
+            {
+                List<int> remainingIndices;
+                lock (session.SyncRoot)
+                {
+                    remainingIndices = Enumerable.Range(0, session.GenerationPlan.Count)
+                        .Where(index => !session.CompletedGenerationIndices.Contains(index))
+                        .ToList();
+                }
+
+                List<AiGeneratedEventPayload> generatedPayloads = new();
+                SemaphoreSlim concurrencyGate = new(DynamicGenerationConcurrency);
+                List<Task> workers = new();
+
+                foreach (int index in remainingIndices)
+                {
+                    if (!IsSessionCurrent(session) || session.Cancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    await concurrencyGate.WaitAsync(session.Cancellation.Token);
+                    workers.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await GenerateDynamicEntryAsync(session, index, generatedPayloads);
+                        }
+                        finally
+                        {
+                            concurrencyGate.Release();
+                        }
+                    }, session.Cancellation.Token));
+                }
+
+                await Task.WhenAll(workers);
+
+                if (generatedPayloads.Count > 0)
+                {
+                    AiEventRepository.SaveHistorySnapshot(session.Seed, "llm_dynamic_batch", generatedPayloads);
+                }
+
+                return;
+            }
+
+            List<AiGeneratedEventPayload> legacyGeneratedPayloads = new();
             for (int index = session.GeneratedCount; index < session.GenerationPlan.Count; index++)
             {
                 if (!IsSessionCurrent(session) || session.Cancellation.IsCancellationRequested)
@@ -585,14 +718,7 @@ public static class AiEventRuntimeService
                         Slot = slot,
                         Theme = theme,
                     };
-                    AiGeneratedEventPayload payload = await AiEventGenerationService.GeneratePayloadAsync(
-                        slot,
-                        session.Seed,
-                        plan.Theme,
-                        plan.OptionCount,
-                        plan.RewardProfile,
-                        recentTitles,
-                        session.Cancellation.Token);
+                    AiGeneratedEventPayload payload = await GenerateUniquePayloadAsync(session, slot, plan, recentTitles);
                     AiEventPoolEntry entry = AiEventRepository.CreatePoolEntry(payload, "llm_dynamic", session.Seed);
                     entry.Theme = $"{plan.Theme} | {plan.OptionCount}选项 | {plan.RewardProfile}";
                     AiEventRepository.AddPoolEntry(entry);
@@ -604,7 +730,7 @@ public static class AiEventRuntimeService
                     }
 
                     SaveSessionState(session);
-                    generatedPayloads.Add(entry.Payload);
+                    legacyGeneratedPayloads.Add(entry.Payload);
                     MainFile.Logger.Info($"[ai-event] generated dynamic event {entry.EntryId} for slot {slot} with theme `{theme}`.");
                 }
                 catch (OperationCanceledException)
@@ -624,9 +750,9 @@ public static class AiEventRuntimeService
                 }
             }
 
-            if (generatedPayloads.Count > 0)
+            if (legacyGeneratedPayloads.Count > 0)
             {
-                AiEventRepository.SaveHistorySnapshot(session.Seed, "llm_dynamic_batch", generatedPayloads);
+                AiEventRepository.SaveHistorySnapshot(session.Seed, "llm_dynamic_batch", legacyGeneratedPayloads);
             }
         }
         catch (Exception ex)
@@ -644,11 +770,122 @@ public static class AiEventRuntimeService
         }
     }
 
+    private static async Task GenerateDynamicEntryAsync(
+        AiEventRunSession session,
+        int index,
+        List<AiGeneratedEventPayload> generatedPayloads)
+    {
+        AiEventSlot slot = session.GenerationPlan[index];
+        AiEventThemePlan plan = session.GenerationThemes.ElementAtOrDefault(index) ?? new AiEventThemePlan
+        {
+            Slot = slot,
+            Theme = string.Empty,
+        };
+        string theme = plan.Theme;
+        List<string> recentTitles = GetRecentGeneratedTitles(session);
+
+        try
+        {
+            AiGeneratedEventPayload payload = await GenerateUniquePayloadAsync(session, slot, plan, recentTitles);
+            AiEventPoolEntry entry = AiEventRepository.CreatePoolEntry(payload, "llm_dynamic", session.Seed);
+            entry.Theme = $"{plan.Theme} | {plan.OptionCount}选项 | {plan.RewardProfile}";
+            AiEventRepository.AddPoolEntry(entry);
+
+            lock (session.SyncRoot)
+            {
+                session.DynamicReadyEntries.Add(entry);
+                session.CompletedGenerationIndices.Add(index);
+                session.GeneratedCount = session.CompletedGenerationIndices.Count;
+            }
+
+            lock (generatedPayloads)
+            {
+                generatedPayloads.Add(entry.Payload);
+            }
+
+            SaveSessionState(session);
+            MainFile.Logger.Info($"[ai-event] generated dynamic event {entry.EntryId} for slot {slot} with theme `{theme}`.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            lock (session.SyncRoot)
+            {
+                session.DiscardedCount++;
+                session.CompletedGenerationIndices.Add(index);
+                session.GeneratedCount = session.CompletedGenerationIndices.Count;
+            }
+
+            SaveSessionState(session);
+            MainFile.Logger.Error($"[ai-event] failed to generate dynamic event for slot {slot}: {ex}");
+        }
+    }
+
     private static bool IsSessionCurrent(AiEventRunSession session)
     {
         lock (SyncRoot)
         {
             return ReferenceEquals(_currentSession, session);
+        }
+    }
+
+    private static async Task<AiGeneratedEventPayload> GenerateUniquePayloadAsync(
+        AiEventRunSession session,
+        AiEventSlot slot,
+        AiEventThemePlan plan,
+        List<string> recentTitles)
+    {
+        List<string> disallowedTitles = new(recentTitles);
+        disallowedTitles.AddRange(GetExistingSeedTitles(session));
+
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            AiGeneratedEventPayload payload = await AiEventGenerationService.GeneratePayloadAsync(
+                slot,
+                session.Seed,
+                plan.Theme,
+                plan.OptionCount,
+                plan.RewardProfile,
+                disallowedTitles,
+                session.Cancellation.Token);
+
+            if (!HasDuplicateTitle(session, payload))
+            {
+                return payload;
+            }
+
+            disallowedTitles.Add(payload.Zhs.Title);
+            disallowedTitles.Add(payload.Eng.Title);
+        }
+
+        throw new InvalidOperationException($"Generated duplicate ai-event title for seed {session.Seed}: {plan.Theme}");
+    }
+
+    private static bool HasDuplicateTitle(AiEventRunSession session, AiGeneratedEventPayload payload)
+    {
+        HashSet<string> existingTitles = GetExistingSeedTitles(session)
+            .Where(static title => !string.IsNullOrWhiteSpace(title))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return existingTitles.Contains(payload.Zhs.Title) || existingTitles.Contains(payload.Eng.Title);
+    }
+
+    private static IEnumerable<string> GetExistingSeedTitles(AiEventRunSession session)
+    {
+        foreach (AiEventPoolEntry entry in AiEventRepository.GetPoolEntriesForSeed(session.Seed, "llm_dynamic"))
+        {
+            if (!string.IsNullOrWhiteSpace(entry.Payload.Zhs?.Title))
+            {
+                yield return entry.Payload.Zhs.Title;
+            }
+
+            if (!string.IsNullOrWhiteSpace(entry.Payload.Eng?.Title))
+            {
+                yield return entry.Payload.Eng.Title;
+            }
         }
     }
 
@@ -676,7 +913,8 @@ public static class AiEventRuntimeService
         lock (session.SyncRoot)
         {
             session.DynamicReadyEntries.AddRange(existingEntries.OrderBy(entry => entry.GeneratedAtUtc));
-            session.GeneratedCount = session.DynamicReadyEntries.Count;
+            session.CompletedGenerationIndices.UnionWith(Enumerable.Range(0, session.DynamicReadyEntries.Count));
+            session.GeneratedCount = session.CompletedGenerationIndices.Count;
             session.GenerationThemes.AddRange(existingEntries
                 .OrderBy(entry => entry.GeneratedAtUtc)
                 .Select(entry => new AiEventThemePlan
@@ -726,7 +964,25 @@ public static class AiEventRuntimeService
                 }
 
                 session.UsedDynamicEntryIds.UnionWith(state.UsedEntryIds);
-                session.GeneratedCount = Math.Max(state.GeneratedCount, session.DynamicReadyEntries.Count + session.UsedDynamicEntryIds.Count);
+                if (state.AssignedSelections != null)
+                {
+                    foreach ((string key, AiEventSelectionDecisionState value) in state.AssignedSelections)
+                    {
+                        session.AssignedSelections[key] = value;
+                    }
+                }
+
+                if (state.CompletedGenerationIndices != null)
+                {
+                    session.CompletedGenerationIndices.UnionWith(state.CompletedGenerationIndices.Where(index => index >= 0));
+                }
+
+                if (session.CompletedGenerationIndices.Count == 0 && state.GeneratedCount > 0)
+                {
+                    session.CompletedGenerationIndices.UnionWith(Enumerable.Range(0, Math.Min(state.GeneratedCount, session.GenerationPlan.Count)));
+                }
+
+                session.GeneratedCount = session.CompletedGenerationIndices.Count;
                 session.IsGenerating = state.IsGenerating && session.GeneratedCount < session.GenerationPlan.Count;
                 session.DiscardedCount = Math.Max(0, state.DiscardedCount);
             }
@@ -758,6 +1014,8 @@ public static class AiEventRuntimeService
                     IsGenerating = session.IsGenerating,
                     DiscardedCount = session.DiscardedCount,
                     GenerationThemes = session.GenerationThemes.ToList(),
+                    CompletedGenerationIndices = session.CompletedGenerationIndices.OrderBy(index => index).ToList(),
+                    AssignedSelections = new Dictionary<string, AiEventSelectionDecisionState>(session.AssignedSelections, StringComparer.OrdinalIgnoreCase),
                 };
             }
 
@@ -798,6 +1056,10 @@ public static class AiEventRuntimeService
         public List<AiEventThemePlan> GenerationThemes { get; } = new();
 
         public HashSet<string> UsedDynamicEntryIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public Dictionary<string, AiEventSelectionDecisionState> AssignedSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public HashSet<int> CompletedGenerationIndices { get; } = new();
 
         public object SyncRoot { get; } = new();
 
@@ -877,6 +1139,39 @@ public static class AiEventRuntimeService
         public int DiscardedCount { get; set; }
 
         public List<AiEventThemePlan> GenerationThemes { get; set; } = new();
+
+        public List<int> CompletedGenerationIndices { get; set; } = new();
+
+        public Dictionary<string, AiEventSelectionDecisionState> AssignedSelections { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class AiEventSelectionDecisionState
+{
+    public bool UseVanilla { get; set; }
+
+    public string TitlePrefix { get; set; } = string.Empty;
+
+    public AiGeneratedEventPayload? Payload { get; set; }
+
+    public AiEventSelectionDecision ToDecision()
+    {
+        return new AiEventSelectionDecision
+        {
+            UseVanilla = UseVanilla,
+            TitlePrefix = TitlePrefix,
+            Payload = Payload,
+        };
+    }
+
+    public static AiEventSelectionDecisionState FromDecision(AiEventSelectionDecision decision)
+    {
+        return new AiEventSelectionDecisionState
+        {
+            UseVanilla = decision.UseVanilla,
+            TitlePrefix = decision.TitlePrefix,
+            Payload = decision.Payload,
+        };
     }
 }
 

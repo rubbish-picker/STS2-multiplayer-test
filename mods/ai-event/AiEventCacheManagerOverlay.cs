@@ -556,7 +556,7 @@ public partial class AiEventCacheManagerOverlay : Control
             AiEventRepository.Initialize();
 
             _previewRestorePayload = AiEventRepository.Get(entry.Payload.Slot);
-            AiEventRepository.SetActive(entry.Payload);
+            AiEventRepository.SetActive(ClonePreviewPayload(entry));
             AiEventLocalization.ApplyCurrentLanguage();
 
             RunState previewRun = RunState.CreateForTest(seed: $"ai-event-preview-{entry.EntryId}");
@@ -587,6 +587,37 @@ public partial class AiEventCacheManagerOverlay : Control
             SetStatus($"事件预览失败: {ex.Message}");
             MainFile.Logger.Error($"[ai-event] failed to preview cached event: {ex}");
         }
+    }
+
+    private static AiGeneratedEventPayload ClonePreviewPayload(AiEventPoolEntry entry)
+    {
+        AiGeneratedEventPayload payload = AiEventRepository.DeserializePoolEntry(AiEventRepository.SerializePoolEntry(entry)).Payload;
+        string prefix = entry.Source?.Trim().ToLowerInvariant() switch
+        {
+            "llm_dynamic" => "[lb]llm dynamic[rb]",
+            "llm_cache" => "[lb]llm cache[rb]",
+            _ => string.Empty,
+        };
+
+        if (!string.IsNullOrWhiteSpace(prefix))
+        {
+            payload.Eng.Title = PrefixTitle(payload.Eng.Title, prefix);
+            payload.Zhs.Title = PrefixTitle(payload.Zhs.Title, prefix);
+        }
+
+        return payload;
+    }
+
+    private static string PrefixTitle(string title, string prefix)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return prefix;
+        }
+
+        return title.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
+            ? title
+            : $"{prefix} {title}";
     }
 
     private void ClosePreviewModal()

@@ -181,6 +181,41 @@ public static class AiEventRepository
         }
     }
 
+    public static int PromoteSeedDynamicEntriesToCache(string seed)
+    {
+        if (string.IsNullOrWhiteSpace(seed))
+        {
+            return 0;
+        }
+
+        lock (SyncRoot)
+        {
+            int changed = 0;
+            foreach (AiEventPoolEntry entry in _poolEntries)
+            {
+                if (!string.Equals(entry.Seed, seed, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                entry.Source = "llm_cache";
+                changed++;
+            }
+
+            if (changed > 0)
+            {
+                SavePoolInternal();
+            }
+
+            return changed;
+        }
+    }
+
     public static string SerializePoolEntry(AiEventPoolEntry entry)
     {
         return JsonSerializer.Serialize(entry, JsonOptions);

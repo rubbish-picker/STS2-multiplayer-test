@@ -57,7 +57,7 @@
         </Reference>
         <Reference Include="sts2">
             <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
-            <Private>false</Private>
+            <Private>true</Private>
             <Publicize>False</Publicize>
         </Reference>
     </ItemGroup>
