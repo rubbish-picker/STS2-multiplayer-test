@@ -120,6 +120,21 @@ public static class AiEventRuntimeService
         return AiEventConfigService.GetMode() == AiEventMode.LlmDebug;
     }
 
+    public static AiEventRunStats GetRunStats()
+    {
+        AiEventConfigService.Reload();
+
+        lock (SyncRoot)
+        {
+            if (_currentSession != null)
+            {
+                return BuildStats(_currentSession);
+            }
+        }
+
+        return LoadPersistedRunStats();
+    }
+
     private static AiEventRunSession? GetCurrentSession(string? seed)
     {
         lock (SyncRoot)
@@ -135,6 +150,59 @@ public static class AiEventRuntimeService
             }
 
             return _currentSession;
+        }
+    }
+
+    private static AiEventRunStats LoadPersistedRunStats()
+    {
+        try
+        {
+            if (!File.Exists(SessionStatePath))
+            {
+                return AiEventRunStats.Empty;
+            }
+
+            string json = File.ReadAllText(SessionStatePath);
+            AiEventRunSessionState? state = JsonSerializer.Deserialize<AiEventRunSessionState>(json, JsonOptions);
+            if (state == null || string.IsNullOrWhiteSpace(state.Seed))
+            {
+                return AiEventRunStats.Empty;
+            }
+
+            int generatedCount = Math.Max(0, state.GeneratedCount);
+            int plannedCount = state.GenerationPlan?.Count ?? 0;
+            int experiencedCount = state.UsedEntryIds?.Distinct(StringComparer.OrdinalIgnoreCase).Count() ?? 0;
+
+            return new AiEventRunStats
+            {
+                HasActiveRun = true,
+                Seed = state.Seed,
+                ExperiencedCount = experiencedCount,
+                GeneratedCount = generatedCount,
+                PendingCount = Math.Max(0, plannedCount - generatedCount),
+                IsGenerating = state.IsGenerating,
+            };
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"[ai-event] failed to load run stats: {ex}");
+            return AiEventRunStats.Empty;
+        }
+    }
+
+    private static AiEventRunStats BuildStats(AiEventRunSession session)
+    {
+        lock (session.SyncRoot)
+        {
+            return new AiEventRunStats
+            {
+                HasActiveRun = true,
+                Seed = session.Seed,
+                ExperiencedCount = session.UsedDynamicEntryIds.Count,
+                GeneratedCount = Math.Max(0, session.GeneratedCount),
+                PendingCount = Math.Max(0, session.GenerationPlan.Count - session.GeneratedCount),
+                IsGenerating = session.IsGenerating,
+            };
         }
     }
 
@@ -289,6 +357,12 @@ public static class AiEventRuntimeService
     {
         try
         {
+            lock (session.SyncRoot)
+            {
+                session.IsGenerating = true;
+            }
+            SaveSessionState(session);
+
             string? validationError = await AiEventGenerationService.ValidateConnectivityAsync();
             if (!string.IsNullOrWhiteSpace(validationError))
             {
@@ -335,6 +409,15 @@ public static class AiEventRuntimeService
         catch (Exception ex)
         {
             MainFile.Logger.Error($"[ai-event] dynamic generation loop failed: {ex}");
+        }
+        finally
+        {
+            lock (session.SyncRoot)
+            {
+                session.IsGenerating = false;
+            }
+
+            SaveSessionState(session);
         }
     }
 
@@ -404,6 +487,7 @@ public static class AiEventRuntimeService
 
                 session.UsedDynamicEntryIds.UnionWith(state.UsedEntryIds);
                 session.GeneratedCount = Math.Max(state.GeneratedCount, session.DynamicReadyEntries.Count + session.UsedDynamicEntryIds.Count);
+                session.IsGenerating = state.IsGenerating && session.GeneratedCount < session.GenerationPlan.Count;
             }
 
             return session;
@@ -430,6 +514,7 @@ public static class AiEventRuntimeService
                     ReadyEntryIds = session.DynamicReadyEntries.Select(entry => entry.EntryId).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                     UsedEntryIds = session.UsedDynamicEntryIds.ToList(),
                     GeneratedCount = session.GeneratedCount,
+                    IsGenerating = session.IsGenerating,
                 };
             }
 
@@ -474,6 +559,8 @@ public static class AiEventRuntimeService
         public Random Random { get; }
 
         public int GeneratedCount { get; set; }
+
+        public bool IsGenerating { get; set; }
 
         private static List<AiEventSlot> BuildGenerationPlan(IReadOnlyList<AiEventSlot> actSlots)
         {
@@ -533,5 +620,24 @@ public static class AiEventRuntimeService
         public List<string> UsedEntryIds { get; set; } = new();
 
         public int GeneratedCount { get; set; }
+
+        public bool IsGenerating { get; set; }
     }
+}
+
+public sealed class AiEventRunStats
+{
+    public static AiEventRunStats Empty { get; } = new();
+
+    public bool HasActiveRun { get; init; }
+
+    public string Seed { get; init; } = string.Empty;
+
+    public int ExperiencedCount { get; init; }
+
+    public int GeneratedCount { get; init; }
+
+    public int PendingCount { get; init; }
+
+    public bool IsGenerating { get; init; }
 }

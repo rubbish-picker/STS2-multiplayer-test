@@ -2,6 +2,7 @@ using System;
 using Godot;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
+using MegaCrit.Sts2.addons.mega_text;
 
 namespace AiEvent;
 
@@ -43,6 +44,8 @@ public static class AiEventMainMenuIntegration
             button.SetMeta("ai_event_connected", true);
         }
 
+        ApplyVisibleText(button, "AI事件缓存管理");
+
         if (mainMenu.GetNodeOrNull<AiEventCacheManagerOverlay>(OverlayName) == null)
         {
             AiEventCacheManagerOverlay overlay = AiEventCacheManagerOverlay.Create();
@@ -55,6 +58,18 @@ public static class AiEventMainMenuIntegration
     {
         AiEventCacheManagerOverlay? overlay = mainMenu.GetNodeOrNull<AiEventCacheManagerOverlay>(OverlayName);
         overlay?.Open();
+    }
+
+    private static void ApplyVisibleText(NMainMenuTextButton button, string text)
+    {
+        MegaLabel? label = button.label ?? button.GetChildOrNull<MegaLabel>(0);
+        if (label == null)
+        {
+            return;
+        }
+
+        label.Text = text;
+        Callable.From(() => label.PivotOffset = label.Size * 0.5f).CallDeferred();
     }
 
     private static void DisconnectAllReleasedSignals(NMainMenuTextButton button)
