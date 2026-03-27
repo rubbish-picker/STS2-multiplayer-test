@@ -100,10 +100,10 @@ public static class AiEventGenerationService
                 "- Avoid repeating motifs like debt, bargains, tides, mirrors, books, or insects unless specifically required.\n" +
                 "- Make them sound like event premises, not card names.\n\n" +
                 "- `option_count` must be 2 or 3.\n" +
-                "- `reward_profile` must be one of: `gentle_positive`, `balanced`, `sharp_tradeoff`.\n" +
-                "- `gentle_positive` means every option is acceptable and at least one is clearly favorable.\n" +
-                "- `balanced` means options feel roughly even, with different costs and rewards.\n" +
-                "- `sharp_tradeoff` means the event has stronger upside/downside tension, but still no purely pointless negative option.\n\n" +
+                "- `reward_profile` must be one of: `favored`, `sharp_tradeoff`, `slightly_bad`.\n" +
+                "- `favored` means at least one option is purely positive, and the others can vary.\n" +
+                "- `sharp_tradeoff` means at least one option has a large upside with a large downside, while the other options should be smaller tradeoffs.\n" +
+                "- `slightly_bad` means at least one option is a purely small negative, while the other options should be small tradeoffs.\n\n" +
                 "Requested slots:\n" +
                 JsonSerializer.Serialize(slots);
 
@@ -185,7 +185,7 @@ public static class AiEventGenerationService
                 }
 
                 NormalizePayload(payload, slot);
-                if (TryValidatePayload(payload, out string validationError))
+                if (TryValidatePayload(payload, NormalizeRewardProfile(rewardProfile, seed, 0), out string validationError))
                 {
                     MainFile.Logger.Info($"Generated ai-event payload for {slot}.");
                     return payload;
@@ -410,7 +410,7 @@ public static class AiEventGenerationService
             $"Theme for this event: `{theme ?? GetFallbackTheme(slot, 0, seed)}`.\n" +
             $"Use exactly `{plannedOptionCount}` options.\n" +
             $"Overall reward profile: `{plannedRewardProfile}`.\n" +
-            "A `gentle_positive` event should feel inviting; a `balanced` event should feel fair; a `sharp_tradeoff` event should feel tense but still worthwhile.\n" +
+            "A `favored` event should have at least one clearly attractive all-upside option. A `sharp_tradeoff` event should feature one harsh but tempting option and smaller tradeoffs elsewhere. A `slightly_bad` event should include one purely small negative option and otherwise only small tradeoffs.\n" +
             "You must generate BOTH the option text and the underlying rewards/costs.\n" +
             "Only use supported effect types from the schema. Do not invent custom mechanics.\n" +
             $"For `add_curse`, only use these card ids: {supportedCurses}.\n" +
@@ -424,6 +424,7 @@ public static class AiEventGenerationService
             "- Option button text must accurately describe the exact effects.\n" +
             "- Result text should feel like the consequence of that exact choice.\n" +
             "- Never mention a curse, relic, card upgrade, healing, gold, or max HP change in text unless the effects really do that.\n" +
+            "- When talking about Gold, the highlight tag must be spelled exactly `[gold]...[/gold]`. Do not write `[goold]`, `[golld]`, or any other variation.\n" +
             "- Only use vanilla STS2 inline markup tags. If you use tags, they must be exactly existing forms like [gold], [red], [blue], [green], [purple], [orange], [aqua], [pink], [jitter], [sine], [shake], [b], [i], [center], [thinky_dots], [font_size=22], or [rainbow freq=0.3 sat=0.8 val=1]. Never invent tags such as [goold] or malformed closing tags.\n" +
             "- Avoid making all events read like the same 3-choice bargain.\n\n" +
             "Avoid repeating or paraphrasing these recent generated event titles:\n" + avoidedTitles + "\n\n" +
@@ -431,7 +432,7 @@ public static class AiEventGenerationService
             "Vanilla samples:\n" + samples;
     }
 
-    private static bool TryValidatePayload(AiGeneratedEventPayload payload, out string error)
+    private static bool TryValidatePayload(AiGeneratedEventPayload payload, string rewardProfile, out string error)
     {
         if (string.IsNullOrWhiteSpace(payload.Eng?.Title) || string.IsNullOrWhiteSpace(payload.Zhs?.Title))
         {
@@ -513,16 +514,15 @@ public static class AiEventGenerationService
                 return false;
             }
 
-            if (!IsOptionWorthTaking(option))
-            {
-                error = $"Option {i + 1} is purely negative or lacks a meaningful upside, which does not fit vanilla event structure.";
-                return false;
-            }
-
             if (!TryValidateOptionTextMatchesEffects(option, engOption, zhsOption, out error))
             {
                 return false;
             }
+        }
+
+        if (!TryValidateRewardProfile(payload.Options, rewardProfile, out error))
+        {
+            return false;
         }
 
         error = string.Empty;
@@ -581,35 +581,121 @@ public static class AiEventGenerationService
         return paragraphs.All(paragraph => paragraph.Length <= 220);
     }
 
-    private static bool IsOptionWorthTaking(AiEventOptionPayload option)
+    private static bool TryValidateRewardProfile(List<AiEventOptionPayload> options, string rewardProfile, out string error)
     {
-        int score = 0;
+        string normalized = NormalizeRewardProfile(rewardProfile, null, 0);
+        List<OptionImpactProfile> profiles = options.Select(BuildImpactProfile).ToList();
+
+        switch (normalized)
+        {
+            case "favored":
+                if (!profiles.Any(static profile => profile.IsPurePositive))
+                {
+                    error = "Reward profile `favored` requires at least one purely positive option.";
+                    return false;
+                }
+
+                error = string.Empty;
+                return true;
+
+            case "sharp_tradeoff":
+                if (!profiles.Any(static profile => profile.IsBigTradeoff))
+                {
+                    error = "Reward profile `sharp_tradeoff` requires at least one option with a big upside and a big downside.";
+                    return false;
+                }
+
+                if (profiles.Any(profile => !profile.IsBigTradeoff && !profile.IsSmallTradeoff))
+                {
+                    error = "Reward profile `sharp_tradeoff` requires the remaining options to be smaller tradeoffs.";
+                    return false;
+                }
+
+                error = string.Empty;
+                return true;
+
+            case "slightly_bad":
+                if (!profiles.Any(static profile => profile.IsPureSmallNegative))
+                {
+                    error = "Reward profile `slightly_bad` requires at least one purely small negative option.";
+                    return false;
+                }
+
+                if (profiles.Any(profile => !profile.IsPureSmallNegative && !profile.IsSmallTradeoff))
+                {
+                    error = "Reward profile `slightly_bad` requires the remaining options to be small tradeoffs.";
+                    return false;
+                }
+
+                error = string.Empty;
+                return true;
+
+            default:
+                error = string.Empty;
+                return true;
+        }
+    }
+
+    private static OptionImpactProfile BuildImpactProfile(AiEventOptionPayload option)
+    {
+        int positiveScore = 0;
+        int negativeScore = 0;
         bool hasPositive = false;
+        bool hasNegative = false;
 
         foreach (AiEventEffectPayload effect in option.Effects)
         {
             switch (effect.Type)
             {
                 case "gain_gold":
+                    positiveScore += effect.Amount >= 90 ? 2 : 1;
+                    hasPositive = true;
+                    break;
                 case "heal":
+                    positiveScore += effect.Amount >= 10 ? 2 : 1;
+                    hasPositive = true;
+                    break;
                 case "gain_max_hp":
+                    positiveScore += 2;
+                    hasPositive = true;
+                    break;
                 case "upgrade_cards":
                 case "upgrade_random":
+                    positiveScore += effect.Count >= 2 ? 2 : 1;
+                    hasPositive = true;
+                    break;
                 case "remove_cards":
+                    positiveScore += effect.Count >= 2 ? 3 : 2;
+                    hasPositive = true;
+                    break;
                 case "obtain_random_relic":
-                    score += 2;
+                    positiveScore += effect.Count >= 2 ? 4 : 3;
                     hasPositive = true;
                     break;
                 case "lose_gold":
+                    negativeScore += effect.Amount >= 60 ? 2 : 1;
+                    hasNegative = true;
+                    break;
                 case "damage_self":
+                    negativeScore += effect.Amount >= 10 ? 2 : 1;
+                    hasNegative = true;
+                    break;
                 case "lose_max_hp":
+                    negativeScore += effect.Amount >= 4 ? 3 : 2;
+                    hasNegative = true;
+                    break;
                 case "add_curse":
-                    score -= 1;
+                    negativeScore += effect.Count >= 2 ? 2 : 1;
+                    hasNegative = true;
                     break;
             }
         }
 
-        return hasPositive || score >= 0;
+        return new OptionImpactProfile(
+            hasPositive && !hasNegative,
+            !hasPositive && hasNegative && negativeScore <= 1,
+            hasPositive && hasNegative && positiveScore >= 3 && negativeScore >= 2,
+            hasPositive && hasNegative && positiveScore >= 1 && positiveScore <= 3 && negativeScore >= 1 && negativeScore <= 2);
     }
 
     private static bool TryValidateOptionTextMatchesEffects(
@@ -842,15 +928,21 @@ public static class AiEventGenerationService
     private static string NormalizeRewardProfile(string? rewardProfile, string? seed, int index)
     {
         string normalized = (rewardProfile ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalized is "gentle_positive" or "balanced" or "sharp_tradeoff")
+        if (normalized is "favored" or "sharp_tradeoff" or "slightly_bad")
         {
             return normalized;
         }
 
-        string[] fallbacks = { "gentle_positive", "balanced", "sharp_tradeoff" };
+        string[] fallbacks = { "favored", "sharp_tradeoff", "slightly_bad" };
         int offset = Math.Abs(HashCode.Combine(seed ?? string.Empty, index, rewardProfile ?? string.Empty));
         return fallbacks[offset % fallbacks.Length];
     }
+
+    private sealed record OptionImpactProfile(
+        bool IsPurePositive,
+        bool IsPureSmallNegative,
+        bool IsBigTradeoff,
+        bool IsSmallTradeoff);
 
     private static int GetSafeMaxOutputTokens(int configuredValue)
     {

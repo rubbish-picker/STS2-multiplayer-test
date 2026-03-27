@@ -11,6 +11,7 @@ Non-negotiable requirements:
 - Preserve STS2 inline markup when useful: `[gold]`, `[red]`, `[green]`, `[blue]`, `[purple]`, `[orange]`, `[aqua]`, `[pink]`, `[jitter]`, `[sine]`, `[shake]`, `[b]`, `[i]`, `[center]`, `[thinky_dots]`, `[font_size=22]`, `[rainbow freq=0.3 sat=0.8 val=1]`.
 - Use highlight markup sparingly and intentionally.
 - Only use exact vanilla STS2 tag names and syntax. Never invent or misspell tags such as `[goold]`, never write malformed closers, and never improvise new parameter formats.
+- When referring to Gold, the tag must be spelled exactly `[gold]...[/gold]`. Most past mistakes were gold misspellings, so double-check this every time.
 
 Style rules:
 - Match vanilla STS2 tone, pacing, and readability.
@@ -40,8 +41,10 @@ Mechanical constraints:
 - Each option should have at least one real effect.
 - The button text must accurately describe the effect list.
 - Keep the mechanics event-like and reasonably balanced for vanilla STS2.
-- Do not create purely pointless negative options.
-- If the prompt gives a reward profile, follow it.
+- If the prompt gives a reward profile, follow it exactly:
+  - `favored`: at least one option is purely positive, other options may vary.
+  - `sharp_tradeoff`: at least one option is a big upside plus big downside, and the other options are smaller tradeoffs.
+  - `slightly_bad`: at least one option is a purely small negative, and the other options are small tradeoffs.
 
 Localization constraints:
 - `eng` and `zhs` should express the same event idea and option intent.

@@ -104,7 +104,7 @@ public sealed class AiEventThemePlan
     public int OptionCount { get; set; } = 3;
 
     [JsonPropertyName("reward_profile")]
-    public string RewardProfile { get; set; } = "balanced";
+    public string RewardProfile { get; set; } = "favored";
 }
 
 public sealed class AiEventOptionPayload
