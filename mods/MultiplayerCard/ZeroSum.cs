@@ -23,7 +23,16 @@ public sealed class ZeroSum : CustomCardModel
     private const string DrainEnergyKey = "DrainEnergy";
     private const string PortraitFileName = "zero_sum.png";
 
-    public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;
+    public override CardMultiplayerConstraint MultiplayerConstraint => MultiplayerCardConfigService.GetMode() switch
+    {
+        MultiplayerCardMode.UniversalMode => CardMultiplayerConstraint.None,
+        _ => CardMultiplayerConstraint.MultiplayerOnly,
+    };
+
+    public override TargetType TargetType =>
+        MultiplayerCardConfigService.IsSingleplayerUniversalFallbackEnabled(base.Owner?.RunState)
+            ? TargetType.Self
+            : base.TargetType;
 
     public override IEnumerable<CardKeyword> CanonicalKeywords =>
         new[] { CardKeyword.Exhaust };
@@ -50,11 +59,16 @@ public sealed class ZeroSum : CustomCardModel
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        ArgumentNullException.ThrowIfNull(cardPlay.Target, nameof(cardPlay.Target));
-
         await PlayerCmd.GainEnergy(base.DynamicVars.Energy.IntValue, base.Owner);
-        await PlayerCmd.LoseEnergy(base.DynamicVars[DrainEnergyKey].IntValue, cardPlay.Target.Player);
-        await CardPileCmd.AddGeneratedCardToCombat(base.CombatState.CreateCard<Guilty>(base.Owner), PileType.Hand, addedByPlayer: true);
+
+        Player? teammate = cardPlay.Target?.Player;
+        if (teammate == null || teammate == base.Owner)
+        {
+            return;
+        }
+
+        await PlayerCmd.LoseEnergy(base.DynamicVars[DrainEnergyKey].IntValue, teammate);
+        await CardPileCmd.AddGeneratedCardToCombat(base.Owner.Creature.CombatState!.CreateCard<Guilty>(base.Owner), PileType.Hand, addedByPlayer: true);
     }
 
     protected override void OnUpgrade()

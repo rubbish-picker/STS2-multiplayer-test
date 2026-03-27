@@ -13,6 +13,8 @@ public partial class MainFile : Node
 
     public static void Initialize()
     {
+        MultiplayerCardConfigService.Initialize();
+
         Harmony harmony = new(ModId);
 
         harmony.PatchAll();

@@ -24,7 +24,16 @@ public sealed class YouSoSelfish : CustomCardModel
     private const string TeammateMaxHpLossKey = "TeammateMaxHpLoss";
     private const string PortraitFileName = "hateyou.png";
 
-    public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;
+    public override CardMultiplayerConstraint MultiplayerConstraint => MultiplayerCardConfigService.GetMode() switch
+    {
+        MultiplayerCardMode.UniversalMode => CardMultiplayerConstraint.None,
+        _ => CardMultiplayerConstraint.MultiplayerOnly,
+    };
+
+    public override TargetType TargetType =>
+        MultiplayerCardConfigService.IsSingleplayerUniversalFallbackEnabled(base.Owner?.RunState)
+            ? TargetType.Self
+            : base.TargetType;
 
     protected override IEnumerable<DynamicVar> CanonicalVars =>
         new DynamicVar[]
@@ -48,9 +57,13 @@ public sealed class YouSoSelfish : CustomCardModel
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        ArgumentNullException.ThrowIfNull(cardPlay.Target, nameof(cardPlay.Target));
-
         await PowerCmd.Apply<StrengthPower>(base.Owner.Creature, base.DynamicVars.Strength.IntValue, base.Owner.Creature, this);
+
+        if (cardPlay.Target == null || cardPlay.Target.Player == base.Owner)
+        {
+            return;
+        }
+
         await CreatureCmd.Damage(
             choiceContext,
             cardPlay.Target,

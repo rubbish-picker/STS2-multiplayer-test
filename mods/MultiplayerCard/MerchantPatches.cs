@@ -20,6 +20,11 @@ public static class MerchantPatches
         CardRarity rarity,
         ref CardCreationResult __result)
     {
+        if (!MultiplayerCardConfigService.ShouldForceDebugShopCards(player))
+        {
+            return true;
+        }
+
         List<CardModel> optionList = options.ToList();
 
         if (!optionList.Any(card => card.Pool is ColorlessCardPool))
