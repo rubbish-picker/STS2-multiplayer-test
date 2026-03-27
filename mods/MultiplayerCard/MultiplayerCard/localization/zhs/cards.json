@@ -1,0 +1,6 @@
+{
+  "MULTIPLAYERCARD-ZERO_SUM.title": "压力着你",
+  "MULTIPLAYERCARD-ZERO_SUM.description": "获得{Energy:energyIcons()}。\n所有队友失去{DrainEnergy:energyIcons()}，你每影响1个队友，就将1张[gold]愧疚[/gold]加入你的[gold]手牌[/gold]。",
+  "MULTIPLAYERCARD-YOU_SO_SELFISH.title": "你怎么这么自私",
+  "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "获得{IfUpgraded:show:6|3}点力量。\n所有队友失去3点生命{IfUpgraded:show:和3点最大生命值|}。"
+}
