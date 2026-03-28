@@ -3,7 +3,8 @@ param(
     [ValidateSet("auto", "manual")]
     [string]$Mode = "manual",
     [switch]$SeparateWindows,
-    [switch]$FullLog
+    [switch]$FullLog,
+    [switch]$CleanStaleArtifacts
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,7 +68,10 @@ if ($existingProcesses) {
     Start-Sleep -Milliseconds 1200
 }
 
-$removedArtifacts = Remove-TestRunArtifacts -RootPath $saveRoot
+$removedArtifacts = @()
+if ($CleanStaleArtifacts) {
+    $removedArtifacts = Remove-TestRunArtifacts -RootPath $saveRoot
+}
 
 Write-Host "== Multiplayer local test ==" -ForegroundColor Cyan
 Write-Host "GameDir: $GameDir"
@@ -84,8 +88,8 @@ Write-Host ""
 Write-Host "Starting two no-steam instances..." -ForegroundColor Yellow
 
 if ($Mode -eq "auto") {
-    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--clientId", "1000")
-    $joinArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001")
+    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard")
+    $joinArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1000")
 
     $proc1 = Start-Process -FilePath $gameExe -ArgumentList $hostArgs -WorkingDirectory $GameDir -PassThru
     Start-Sleep -Milliseconds 1200
@@ -98,11 +102,16 @@ if ($Mode -eq "auto") {
     Write-Host "The client should open join flow automatically and connect to 127.0.0.1."
 }
 else {
-    $proc1 = Start-Process -FilePath $launchBat -WorkingDirectory $GameDir -PassThru
+    $hostArgs = @("--force-steam", "off")
+    $joinArgs = @("--force-steam", "off", "--clientId", "1000")
+
+    $proc1 = Start-Process -FilePath $gameExe -ArgumentList $hostArgs -WorkingDirectory $GameDir -PassThru
     Start-Sleep -Milliseconds 900
-    $proc2 = Start-Process -FilePath $launchBat -WorkingDirectory $GameDir -PassThru
+    $proc2 = Start-Process -FilePath $gameExe -ArgumentList $joinArgs -WorkingDirectory $GameDir -PassThru
 
     Write-Host "Manual mode enabled."
+    Write-Host "  Host  args: $($hostArgs -join ' ')"
+    Write-Host "  Client args: $($joinArgs -join ' ')"
     Write-Host "Host in one client and join 127.0.0.1 in the other."
 }
 

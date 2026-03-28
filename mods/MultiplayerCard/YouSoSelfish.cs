@@ -6,6 +6,7 @@ using BaseLib.Abstracts;
 using BaseLib.Utils;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.HoverTips;
@@ -31,8 +32,8 @@ public sealed class YouSoSelfish : CustomCardModel
     };
 
     public override TargetType TargetType =>
-        MultiplayerCardConfigService.IsSingleplayerUniversalFallbackEnabled(base.Owner?.RunState)
-            ? TargetType.Self
+        MultiplayerCardConfigService.IsSingleplayerUniversalFallbackEnabled(base.Owner?.RunState) || !HasAliveTeammateTarget()
+            ? TargetType.None
             : base.TargetType;
 
     protected override IEnumerable<DynamicVar> CanonicalVars =>
@@ -78,9 +79,37 @@ public sealed class YouSoSelfish : CustomCardModel
         }
     }
 
+    public override bool ShouldAllowTargeting(Creature target)
+    {
+        return IsAllowedTarget(target);
+    }
+
     protected override void OnUpgrade()
     {
         base.DynamicVars.Strength.UpgradeValueBy(3m);
         base.DynamicVars[TeammateMaxHpLossKey].UpgradeValueBy(2m);
+    }
+
+    private bool HasAliveTeammateTarget()
+    {
+        Player? owner = base.Owner;
+        return owner?.RunState?.Players.Any(player => player != owner && player.Creature != null && player.Creature.IsAlive) ?? false;
+    }
+
+    private bool IsAllowedTarget(Creature? target)
+    {
+        if (target == null || base.Owner == null)
+        {
+            return false;
+        }
+
+        if (!HasAliveTeammateTarget())
+        {
+            return false;
+        }
+
+        return target.Player != null
+            && target.Player != base.Owner
+            && target.IsAlive;
     }
 }
