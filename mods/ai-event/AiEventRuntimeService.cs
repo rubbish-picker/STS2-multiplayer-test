@@ -209,12 +209,10 @@ public static class AiEventRuntimeService
     {
         AiEventConfigService.Reload();
 
-        lock (SyncRoot)
+        AiEventRunSession? currentSession = GetLiveCurrentSession();
+        if (currentSession != null)
         {
-            if (_currentSession != null)
-            {
-                return BuildStats(_currentSession);
-            }
+            return BuildStats(currentSession);
         }
 
         return LoadPersistedRunStats();
@@ -225,14 +223,7 @@ public static class AiEventRuntimeService
         AiEventConfigService.Reload();
 
         bool currentIsMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
-        AiEventRunStats? inMemoryStats = null;
-        lock (SyncRoot)
-        {
-            if (_currentSession != null)
-            {
-                inMemoryStats = BuildStats(_currentSession);
-            }
-        }
+        AiEventRunStats? inMemoryStats = GetLiveCurrentSession() is { } liveSession ? BuildStats(liveSession) : null;
 
         AiEventRunStats singleplayerStats = currentIsMultiplayer
             ? LoadPersistedRunStats(isMultiplayer: false)
@@ -267,6 +258,27 @@ public static class AiEventRuntimeService
         }
     }
 
+    private static AiEventRunSession? GetLiveCurrentSession()
+    {
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+
+        lock (SyncRoot)
+        {
+            if (_currentSession == null)
+            {
+                return null;
+            }
+
+            if (AiEventStorage.HasRunSave(isMultiplayer))
+            {
+                return _currentSession;
+            }
+
+            _currentSession = null;
+            return null;
+        }
+    }
+
     private static AiEventRunStats LoadPersistedRunStats()
     {
         bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
@@ -287,6 +299,12 @@ public static class AiEventRuntimeService
             AiEventRunSessionState? state = JsonSerializer.Deserialize<AiEventRunSessionState>(json, JsonOptions);
             if (state == null || string.IsNullOrWhiteSpace(state.Seed))
             {
+                return AiEventRunStats.Empty;
+            }
+
+            if (!AiEventStorage.HasRunSave(isMultiplayer))
+            {
+                TryDeleteStaleSessionState(isMultiplayer, $"run save missing for persisted {(isMultiplayer ? "multiplayer" : "singleplayer")} session");
                 return AiEventRunStats.Empty;
             }
 
@@ -976,6 +994,13 @@ public static class AiEventRuntimeService
                 return null;
             }
 
+            bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+            if (!AiEventStorage.HasRunSave(isMultiplayer))
+            {
+                TryDeleteStaleSessionState(isMultiplayer, $"run save missing for restored {(isMultiplayer ? "multiplayer" : "singleplayer")} session");
+                return null;
+            }
+
             AiEventRunSession session = new(seed, state.ActSlots ?? new List<AiEventSlot>(), state.GenerationPlan ?? new List<AiEventSlot>());
             IReadOnlyDictionary<string, AiEventPoolEntry> entriesById = AiEventRepository
                 .GetPoolEntriesByIds(state.ReadyEntryIds.Concat(state.UsedEntryIds))
@@ -1058,6 +1083,20 @@ public static class AiEventRuntimeService
         catch (Exception ex)
         {
             MainFile.Logger.Error($"[ai-event] failed to save run session state: {ex}");
+        }
+    }
+
+    private static void TryDeleteStaleSessionState(bool isMultiplayer, string reason)
+    {
+        try
+        {
+            string path = AiEventStorage.GetSessionStatePath(isMultiplayer);
+            AiEventStorage.DeleteFileIfExists(path);
+            MainFile.Logger.Info($"[ai-event] cleared stale {(isMultiplayer ? "multiplayer" : "singleplayer")} run session state because {reason}.");
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"[ai-event] failed to clear stale run session state: {ex}");
         }
     }
 

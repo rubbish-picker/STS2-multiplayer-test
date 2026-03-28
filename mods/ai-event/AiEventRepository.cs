@@ -38,7 +38,6 @@ public static class AiEventRepository
         {
             AiEventStorage.MigrateLegacyFiles(AiEventConfigService.GetModDirectory());
             PoolDatabase.EnsureInitialized();
-            MigrateLegacyPoolJsonToDatabase();
             LoadActiveCache();
             PromoteInactiveDynamicEntriesToCacheInternal(GetActiveRunSeedFromSessionState());
             NormalizeActivePayloads();
@@ -194,6 +193,7 @@ public static class AiEventRepository
         lock (SyncRoot)
         {
             PoolDatabase.Clear();
+            TryDeleteLegacyPoolArtifacts();
         }
     }
 
@@ -301,81 +301,16 @@ public static class AiEventRepository
         }
     }
 
-    private static void MigrateLegacyPoolJsonToDatabase()
+    private static void TryDeleteLegacyPoolArtifacts()
     {
         try
         {
-            if (PoolDatabase.HasAnyEntries())
-            {
-                return;
-            }
-
-            if (File.Exists(PoolPath))
-            {
-                string json = File.ReadAllText(PoolPath);
-                List<AiEventPoolEntry>? entries = JsonSerializer.Deserialize<List<AiEventPoolEntry>>(json, JsonOptions);
-                List<AiEventPoolEntry> normalizedEntries = (entries ?? new List<AiEventPoolEntry>())
-                    .Select(NormalizePoolEntry)
-                    .OrderByDescending(entry => entry.GeneratedAtUtc)
-                    .GroupBy(entry => entry.EntryId)
-                    .Select(group => group.First())
-                    .ToList();
-
-                PoolDatabase.ReplaceAll(normalizedEntries, entry => SerializePayload(entry.Payload));
-                MainFile.Logger.Info($"[ai-event] migrated {normalizedEntries.Count} legacy pool entries into sqlite.");
-                return;
-            }
-
-            List<AiEventPoolEntry> historyEntries = BootstrapPoolFromHistory();
-            if (historyEntries.Count > 0)
-            {
-                PoolDatabase.ReplaceAll(historyEntries, entry => SerializePayload(entry.Payload));
-                MainFile.Logger.Info($"[ai-event] bootstrapped {historyEntries.Count} pool entries from history into sqlite.");
-            }
+            AiEventStorage.DeleteFileIfExists(PoolPath);
         }
         catch (Exception ex)
         {
-            MainFile.Logger.Error($"Failed to migrate ai-event pool to sqlite: {ex}");
+            MainFile.Logger.Error($"Failed to delete legacy ai-event pool json while clearing cache: {ex}");
         }
-    }
-
-    private static List<AiEventPoolEntry> BootstrapPoolFromHistory()
-    {
-        List<AiEventPoolEntry> entries = new();
-        try
-        {
-            if (!Directory.Exists(HistoryDirectoryPath))
-            {
-                return entries;
-            }
-
-            foreach (string path in Directory.GetFiles(HistoryDirectoryPath, "*.json").OrderByDescending(path => path))
-            {
-                string json = File.ReadAllText(path);
-                AiEventGenerationSnapshot? snapshot = JsonSerializer.Deserialize<AiEventGenerationSnapshot>(json, JsonOptions);
-                if (snapshot?.Events == null)
-                {
-                    continue;
-                }
-
-                foreach (AiGeneratedEventPayload payload in snapshot.Events)
-                {
-                    AiEventPoolEntry entry = CreatePoolEntry(payload, snapshot.Source, snapshot.Seed);
-                    entry.GeneratedAtUtc = snapshot.GeneratedAtUtc;
-                    entries.Add(NormalizePoolEntry(entry));
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            MainFile.Logger.Error($"Failed to bootstrap ai-event pool from history: {ex}");
-        }
-
-        return entries
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .GroupBy(entry => entry.EntryId)
-            .Select(group => group.First())
-            .ToList();
     }
 
     private static void NormalizeActivePayloads()

@@ -4,6 +4,7 @@ using Godot;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Managers;
 
 namespace AiEvent;
 
@@ -51,6 +52,21 @@ public static class AiEventStorage
         return GetSessionStatePath(isMultiplayer);
     }
 
+    public static string GetRunSavePath(bool isMultiplayer)
+    {
+        string fileName = isMultiplayer
+            ? RunSaveManager.multiplayerRunSaveFileName
+            : RunSaveManager.runSaveFileName;
+
+        return ToFileSystemPath(SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, fileName)));
+    }
+
+    public static bool HasRunSave(bool isMultiplayer)
+    {
+        string path = GetRunSavePath(isMultiplayer);
+        return File.Exists(path) || File.Exists(path + ".backup");
+    }
+
     public static string[] GetAllSessionStatePaths()
     {
         return new[]
@@ -73,6 +89,14 @@ public static class AiEventStorage
     {
         Directory.CreateDirectory(GetProfileDataDirectory());
         Directory.CreateDirectory(GetHistoryDirectoryPath());
+    }
+
+    public static void DeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     private static string ToFileSystemPath(string path)
