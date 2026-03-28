@@ -72,11 +72,6 @@ public sealed class ZeroSum : CustomCardModel
         await CardPileCmd.AddGeneratedCardToCombat(base.Owner.Creature.CombatState!.CreateCard<Guilty>(base.Owner), PileType.Hand, addedByPlayer: true);
     }
 
-    public override bool ShouldAllowTargeting(Creature target)
-    {
-        return IsAllowedTarget(target);
-    }
-
     protected override void OnUpgrade()
     {
         RemoveKeyword(CardKeyword.Exhaust);
@@ -86,22 +81,5 @@ public sealed class ZeroSum : CustomCardModel
     {
         Player? owner = base.Owner;
         return owner?.RunState?.Players.Any(player => player != owner && player.Creature != null && player.Creature.IsAlive) ?? false;
-    }
-
-    private bool IsAllowedTarget(Creature? target)
-    {
-        if (target == null || base.Owner == null)
-        {
-            return false;
-        }
-
-        if (!HasAliveTeammateTarget())
-        {
-            return false;
-        }
-
-        return target.Player != null
-            && target.Player != base.Owner
-            && target.IsAlive;
     }
 }

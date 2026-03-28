@@ -65,23 +65,26 @@ public sealed class YouSoSelfish : CustomCardModel
             return;
         }
 
+        decimal hpLoss = base.DynamicVars[TeammateHpLossKey].IntValue;
+        int previousHp = cardPlay.Target.CurrentHp;
         await CreatureCmd.Damage(
             choiceContext,
             cardPlay.Target,
-            base.DynamicVars[TeammateHpLossKey].IntValue,
+            hpLoss,
             ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move,
             base.Owner.Creature,
             this);
+
+        if (hpLoss > 0 && cardPlay.Target.CurrentHp >= previousHp)
+        {
+            await CreatureCmd.SetCurrentHp(cardPlay.Target, Math.Max(0m, previousHp - hpLoss));
+            await CreatureCmd.TriggerAnim(cardPlay.Target, "Hit", 0f);
+        }
 
         if (base.IsUpgraded)
         {
             await CreatureCmd.LoseMaxHp(choiceContext, cardPlay.Target, base.DynamicVars[TeammateMaxHpLossKey].IntValue, isFromCard: true);
         }
-    }
-
-    public override bool ShouldAllowTargeting(Creature target)
-    {
-        return IsAllowedTarget(target);
     }
 
     protected override void OnUpgrade()
@@ -94,22 +97,5 @@ public sealed class YouSoSelfish : CustomCardModel
     {
         Player? owner = base.Owner;
         return owner?.RunState?.Players.Any(player => player != owner && player.Creature != null && player.Creature.IsAlive) ?? false;
-    }
-
-    private bool IsAllowedTarget(Creature? target)
-    {
-        if (target == null || base.Owner == null)
-        {
-            return false;
-        }
-
-        if (!HasAliveTeammateTarget())
-        {
-            return false;
-        }
-
-        return target.Player != null
-            && target.Player != base.Owner
-            && target.IsAlive;
     }
 }
