@@ -1,7 +1,7 @@
 param(
     [string]$GameDir = "D:\steam\steamapps\common\Slay the Spire 2",
     [ValidateSet("auto", "manual")]
-    [string]$Mode = "auto",
+    [string]$Mode = "manual",
     [switch]$SeparateWindows,
     [switch]$FullLog
 )
