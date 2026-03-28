@@ -1,48 +1,100 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace AiEvent;
 
 public sealed class AiEventPoolDatabase
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = null,
-    };
-
     private readonly string _databaseDirectoryPath;
-    private readonly string _entriesDirectoryPath;
-    private readonly string _indexPath;
-
-    private bool _loaded;
-    private Dictionary<string, AiEventPoolIndexEntry> _indexEntries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _databasePath;
+    private readonly string _connectionString;
+    private bool _initialized;
 
     public AiEventPoolDatabase(string databaseDirectoryPath)
     {
         _databaseDirectoryPath = databaseDirectoryPath;
-        _entriesDirectoryPath = Path.Combine(databaseDirectoryPath, "entries");
-        _indexPath = Path.Combine(databaseDirectoryPath, "index.json");
+        _databasePath = Path.Combine(databaseDirectoryPath, "pool.db");
+        _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+        }.ToString();
     }
 
     public void EnsureInitialized()
     {
+        if (_initialized)
+        {
+            return;
+        }
+
         Directory.CreateDirectory(_databaseDirectoryPath);
-        Directory.CreateDirectory(_entriesDirectoryPath);
-        EnsureLoaded();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS event_pool (
+                entry_id TEXT PRIMARY KEY,
+                generated_at_utc TEXT NOT NULL,
+                source TEXT NOT NULL,
+                seed TEXT NOT NULL,
+                theme TEXT NOT NULL,
+                slot INTEGER NOT NULL,
+                eng_title TEXT NOT NULL,
+                zhs_title TEXT NOT NULL,
+                eng_initial_description TEXT NOT NULL,
+                zhs_initial_description TEXT NOT NULL,
+                event_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_event_pool_generated_at ON event_pool(generated_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS ix_event_pool_seed_source ON event_pool(seed, source);
+            CREATE INDEX IF NOT EXISTS ix_event_pool_slot_generated_at ON event_pool(slot, generated_at_utc DESC);
+            """;
+        command.ExecuteNonQuery();
+        _initialized = true;
     }
 
     public void Upsert(AiEventPoolEntry entry, string payloadJson)
     {
         EnsureInitialized();
 
-        AiEventPoolIndexEntry indexEntry = AiEventPoolIndexEntry.FromPoolEntry(entry);
-        WritePayload(entry.EntryId, payloadJson);
-        _indexEntries[entry.EntryId] = indexEntry;
-        SaveIndex();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO event_pool (
+                entry_id, generated_at_utc, source, seed, theme, slot,
+                eng_title, zhs_title, eng_initial_description, zhs_initial_description,
+                event_key, payload_json
+            )
+            VALUES (
+                $entry_id, $generated_at_utc, $source, $seed, $theme, $slot,
+                $eng_title, $zhs_title, $eng_initial_description, $zhs_initial_description,
+                $event_key, $payload_json
+            )
+            ON CONFLICT(entry_id) DO UPDATE SET
+                generated_at_utc = excluded.generated_at_utc,
+                source = excluded.source,
+                seed = excluded.seed,
+                theme = excluded.theme,
+                slot = excluded.slot,
+                eng_title = excluded.eng_title,
+                zhs_title = excluded.zhs_title,
+                eng_initial_description = excluded.eng_initial_description,
+                zhs_initial_description = excluded.zhs_initial_description,
+                event_key = excluded.event_key,
+                payload_json = excluded.payload_json;
+            """;
+
+        BindEntry(command, entry, payloadJson);
+        command.ExecuteNonQuery();
     }
 
     public List<AiEventPoolEntry> QueryLatest(HashSet<AiEventSlot> allowedSlots, int limit, Func<string, AiGeneratedEventPayload> payloadParser)
@@ -53,29 +105,31 @@ public sealed class AiEventPoolDatabase
             return new List<AiEventPoolEntry>();
         }
 
-        return _indexEntries.Values
-            .Where(entry => allowedSlots.Contains(entry.Slot))
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .Take(limit)
-            .Select(entry => Materialize(entry, payloadParser))
-            .ToList();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"SELECT * FROM event_pool WHERE slot IN ({BuildInClause(command, allowedSlots)}) ORDER BY generated_at_utc DESC LIMIT $limit;";
+        command.Parameters.AddWithValue("$limit", limit);
+        return ReadEntries(command, payloadParser);
     }
 
     public List<AiEventPoolEntry> QueryBySeed(string seed, string? source, Func<string, AiGeneratedEventPayload> payloadParser)
     {
         EnsureInitialized();
 
-        IEnumerable<AiEventPoolIndexEntry> query = _indexEntries.Values
-            .Where(entry => string.Equals(entry.Seed, seed, StringComparison.Ordinal));
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            string.IsNullOrWhiteSpace(source)
+                ? "SELECT * FROM event_pool WHERE seed = $seed ORDER BY generated_at_utc DESC;"
+                : "SELECT * FROM event_pool WHERE seed = $seed AND source = $source ORDER BY generated_at_utc DESC;";
+        command.Parameters.AddWithValue("$seed", seed);
         if (!string.IsNullOrWhiteSpace(source))
         {
-            query = query.Where(entry => string.Equals(entry.Source, source, StringComparison.OrdinalIgnoreCase));
+            command.Parameters.AddWithValue("$source", source);
         }
 
-        return query
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .Select(entry => Materialize(entry, payloadParser))
-            .ToList();
+        return ReadEntries(command, payloadParser);
     }
 
     public List<AiEventPoolEntry> QueryByIds(HashSet<string> entryIds, Func<string, AiGeneratedEventPayload> payloadParser)
@@ -86,30 +140,87 @@ public sealed class AiEventPoolDatabase
             return new List<AiEventPoolEntry>();
         }
 
-        return _indexEntries.Values
-            .Where(entry => entryIds.Contains(entry.EntryId))
-            .Select(entry => Materialize(entry, payloadParser))
-            .ToList();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT * FROM event_pool WHERE entry_id IN ({BuildInClause(command, entryIds)}) ORDER BY generated_at_utc DESC;";
+        return ReadEntries(command, payloadParser);
     }
 
     public List<AiEventPoolEntry> QueryAll(Func<string, AiGeneratedEventPayload> payloadParser)
     {
         EnsureInitialized();
 
-        return _indexEntries.Values
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .Select(entry => Materialize(entry, payloadParser))
-            .ToList();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM event_pool ORDER BY generated_at_utc DESC;";
+        return ReadEntries(command, payloadParser);
+    }
+
+    public int GetSummaryCount()
+    {
+        EnsureInitialized();
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM event_pool;";
+        return Convert.ToInt32(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+    }
+
+    public List<AiEventPoolEntrySummary> QuerySummariesPage(int offset, int limit)
+    {
+        EnsureInitialized();
+        if (limit <= 0)
+        {
+            return new List<AiEventPoolEntrySummary>();
+        }
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+                entry_id, generated_at_utc, source, seed, theme, slot,
+                eng_title, zhs_title, eng_initial_description, zhs_initial_description, event_key
+            FROM event_pool
+            ORDER BY generated_at_utc DESC
+            LIMIT $limit OFFSET $offset;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$offset", Math.Max(0, offset));
+
+        List<AiEventPoolEntrySummary> results = new();
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(ReadSummary(reader));
+        }
+
+        return results;
     }
 
     public List<AiEventPoolEntrySummary> QueryAllSummaries()
     {
         EnsureInitialized();
 
-        return _indexEntries.Values
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .Select(entry => entry.ToSummary())
-            .ToList();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+                entry_id, generated_at_utc, source, seed, theme, slot,
+                eng_title, zhs_title, eng_initial_description, zhs_initial_description, event_key
+            FROM event_pool
+            ORDER BY generated_at_utc DESC;
+            """;
+
+        List<AiEventPoolEntrySummary> results = new();
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(ReadSummary(reader));
+        }
+
+        return results;
     }
 
     public AiEventPoolEntry? QueryEntryById(string entryId, Func<string, AiGeneratedEventPayload> payloadParser)
@@ -120,242 +231,204 @@ public sealed class AiEventPoolDatabase
             return null;
         }
 
-        return !_indexEntries.TryGetValue(entryId, out AiEventPoolIndexEntry? entry)
-            ? null
-            : Materialize(entry, payloadParser);
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM event_pool WHERE entry_id = $entry_id LIMIT 1;";
+        command.Parameters.AddWithValue("$entry_id", entryId);
+        return ReadSingleEntry(command, payloadParser);
     }
 
     public void Delete(string entryId)
     {
         EnsureInitialized();
-        _indexEntries.Remove(entryId);
 
-        string payloadPath = GetPayloadPath(entryId);
-        if (File.Exists(payloadPath))
-        {
-            File.Delete(payloadPath);
-        }
-
-        SaveIndex();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM event_pool WHERE entry_id = $entry_id;";
+        command.Parameters.AddWithValue("$entry_id", entryId);
+        command.ExecuteNonQuery();
     }
 
     public void Clear()
     {
         EnsureInitialized();
 
-        if (Directory.Exists(_entriesDirectoryPath))
-        {
-            Directory.Delete(_entriesDirectoryPath, recursive: true);
-        }
-
-        Directory.CreateDirectory(_entriesDirectoryPath);
-        _indexEntries = new Dictionary<string, AiEventPoolIndexEntry>(StringComparer.OrdinalIgnoreCase);
-        SaveIndex();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM event_pool;";
+        command.ExecuteNonQuery();
+        Vacuum(connection);
     }
 
     public int PromoteSeedDynamicEntriesToCache(string seed)
     {
         EnsureInitialized();
 
-        int changed = 0;
-        foreach (AiEventPoolIndexEntry entry in _indexEntries.Values)
-        {
-            if (!string.Equals(entry.Seed, seed, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            entry.Source = "llm_cache";
-            changed++;
-        }
-
-        if (changed > 0)
-        {
-            SaveIndex();
-        }
-
-        return changed;
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE event_pool
+            SET source = 'llm_cache'
+            WHERE seed = $seed AND LOWER(source) = 'llm_dynamic';
+            """;
+        command.Parameters.AddWithValue("$seed", seed);
+        return command.ExecuteNonQuery();
     }
 
     public int PromoteInactiveDynamicEntriesToCache(string? activeSeed)
     {
         EnsureInitialized();
 
-        int changed = 0;
-        foreach (AiEventPoolIndexEntry entry in _indexEntries.Values)
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = string.IsNullOrWhiteSpace(activeSeed)
+            ? "UPDATE event_pool SET source = 'llm_cache' WHERE LOWER(source) = 'llm_dynamic';"
+            : "UPDATE event_pool SET source = 'llm_cache' WHERE LOWER(source) = 'llm_dynamic' AND seed <> $active_seed;";
+        if (!string.IsNullOrWhiteSpace(activeSeed))
         {
-            if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(activeSeed) && string.Equals(entry.Seed, activeSeed, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            entry.Source = "llm_cache";
-            changed++;
+            command.Parameters.AddWithValue("$active_seed", activeSeed);
         }
 
-        if (changed > 0)
-        {
-            SaveIndex();
-        }
-
-        return changed;
+        return command.ExecuteNonQuery();
     }
 
     public bool HasAnyEntries()
     {
-        EnsureInitialized();
-        return _indexEntries.Count > 0;
+        return GetSummaryCount() > 0;
     }
 
     public void ReplaceAll(IEnumerable<AiEventPoolEntry> entries, Func<AiEventPoolEntry, string> payloadSerializer)
     {
         EnsureInitialized();
 
-        if (Directory.Exists(_entriesDirectoryPath))
-        {
-            Directory.Delete(_entriesDirectoryPath, recursive: true);
-        }
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = connection.BeginTransaction();
 
-        Directory.CreateDirectory(_entriesDirectoryPath);
-        _indexEntries = new Dictionary<string, AiEventPoolIndexEntry>(StringComparer.OrdinalIgnoreCase);
+        using (SqliteCommand clearCommand = connection.CreateCommand())
+        {
+            clearCommand.Transaction = transaction;
+            clearCommand.CommandText = "DELETE FROM event_pool;";
+            clearCommand.ExecuteNonQuery();
+        }
 
         foreach (AiEventPoolEntry entry in entries)
         {
-            AiEventPoolIndexEntry indexEntry = AiEventPoolIndexEntry.FromPoolEntry(entry);
-            WritePayload(entry.EntryId, payloadSerializer(entry));
-            _indexEntries[entry.EntryId] = indexEntry;
+            using SqliteCommand insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText =
+                """
+                INSERT INTO event_pool (
+                    entry_id, generated_at_utc, source, seed, theme, slot,
+                    eng_title, zhs_title, eng_initial_description, zhs_initial_description,
+                    event_key, payload_json
+                )
+                VALUES (
+                    $entry_id, $generated_at_utc, $source, $seed, $theme, $slot,
+                    $eng_title, $zhs_title, $eng_initial_description, $zhs_initial_description,
+                    $event_key, $payload_json
+                );
+                """;
+            BindEntry(insertCommand, entry, payloadSerializer(entry));
+            insertCommand.ExecuteNonQuery();
         }
 
-        SaveIndex();
+        transaction.Commit();
+        Vacuum(connection);
     }
 
-    private void EnsureLoaded()
+    private SqliteConnection OpenConnection()
     {
-        if (_loaded)
+        SqliteConnection connection = new(_connectionString);
+        connection.Open();
+        return connection;
+    }
+
+    private static void BindEntry(SqliteCommand command, AiEventPoolEntry entry, string payloadJson)
+    {
+        command.Parameters.AddWithValue("$entry_id", entry.EntryId);
+        command.Parameters.AddWithValue("$generated_at_utc", entry.GeneratedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$source", entry.Source ?? string.Empty);
+        command.Parameters.AddWithValue("$seed", entry.Seed ?? string.Empty);
+        command.Parameters.AddWithValue("$theme", entry.Theme ?? string.Empty);
+        command.Parameters.AddWithValue("$slot", (int)entry.Payload.Slot);
+        command.Parameters.AddWithValue("$eng_title", entry.Payload.Eng?.Title ?? string.Empty);
+        command.Parameters.AddWithValue("$zhs_title", entry.Payload.Zhs?.Title ?? string.Empty);
+        command.Parameters.AddWithValue("$eng_initial_description", entry.Payload.Eng?.InitialDescription ?? string.Empty);
+        command.Parameters.AddWithValue("$zhs_initial_description", entry.Payload.Zhs?.InitialDescription ?? string.Empty);
+        command.Parameters.AddWithValue("$event_key", entry.Payload.EventKey ?? string.Empty);
+        command.Parameters.AddWithValue("$payload_json", payloadJson);
+    }
+
+    private static string BuildInClause<T>(SqliteCommand command, IEnumerable<T> values)
+    {
+        List<string> parameterNames = new();
+        int index = 0;
+        foreach (T value in values)
         {
-            return;
+            string parameterName = $"$p{index++}";
+            command.Parameters.AddWithValue(parameterName, value?.ToString() ?? string.Empty);
+            parameterNames.Add(parameterName);
         }
 
-        _loaded = true;
-        if (!File.Exists(_indexPath))
+        return parameterNames.Count == 0 ? "NULL" : string.Join(", ", parameterNames);
+    }
+
+    private static List<AiEventPoolEntry> ReadEntries(SqliteCommand command, Func<string, AiGeneratedEventPayload> payloadParser)
+    {
+        List<AiEventPoolEntry> entries = new();
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
         {
-            _indexEntries = new Dictionary<string, AiEventPoolIndexEntry>(StringComparer.OrdinalIgnoreCase);
-            SaveIndex();
-            return;
+            entries.Add(ReadEntry(reader, payloadParser));
         }
 
-        string json = File.ReadAllText(_indexPath);
-        List<AiEventPoolIndexEntry>? entries = JsonSerializer.Deserialize<List<AiEventPoolIndexEntry>>(json, JsonOptions);
-        _indexEntries = (entries ?? new List<AiEventPoolIndexEntry>())
-            .Where(entry => !string.IsNullOrWhiteSpace(entry.EntryId))
-            .ToDictionary(entry => entry.EntryId, StringComparer.OrdinalIgnoreCase);
+        return entries;
     }
 
-    private void SaveIndex()
+    private static AiEventPoolEntry? ReadSingleEntry(SqliteCommand command, Func<string, AiGeneratedEventPayload> payloadParser)
     {
-        List<AiEventPoolIndexEntry> orderedEntries = _indexEntries.Values
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .ToList();
-        File.WriteAllText(_indexPath, JsonSerializer.Serialize(orderedEntries, JsonOptions));
+        using SqliteDataReader reader = command.ExecuteReader();
+        return reader.Read() ? ReadEntry(reader, payloadParser) : null;
     }
 
-    private void WritePayload(string entryId, string payloadJson)
+    private static AiEventPoolEntry ReadEntry(SqliteDataReader reader, Func<string, AiGeneratedEventPayload> payloadParser)
     {
-        File.WriteAllText(GetPayloadPath(entryId), payloadJson);
-    }
-
-    private string ReadPayload(string entryId)
-    {
-        return File.ReadAllText(GetPayloadPath(entryId));
-    }
-
-    private string GetPayloadPath(string entryId)
-    {
-        return Path.Combine(_entriesDirectoryPath, $"{entryId}.json");
-    }
-
-    private AiEventPoolEntry Materialize(AiEventPoolIndexEntry entry, Func<string, AiGeneratedEventPayload> payloadParser)
-    {
-        AiGeneratedEventPayload payload = payloadParser(ReadPayload(entry.EntryId));
+        string payloadJson = reader.GetString(reader.GetOrdinal("payload_json"));
+        AiGeneratedEventPayload payload = payloadParser(payloadJson);
         return new AiEventPoolEntry
         {
-            EntryId = entry.EntryId,
-            GeneratedAtUtc = entry.GeneratedAtUtc,
-            Source = entry.Source,
-            Seed = entry.Seed,
-            Theme = entry.Theme,
+            EntryId = reader.GetString(reader.GetOrdinal("entry_id")),
+            GeneratedAtUtc = DateTime.Parse(reader.GetString(reader.GetOrdinal("generated_at_utc")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            Source = reader.GetString(reader.GetOrdinal("source")),
+            Seed = reader.GetString(reader.GetOrdinal("seed")),
+            Theme = reader.GetString(reader.GetOrdinal("theme")),
             Payload = payload,
         };
     }
 
-    private sealed class AiEventPoolIndexEntry
+    private static AiEventPoolEntrySummary ReadSummary(SqliteDataReader reader)
     {
-        public string EntryId { get; set; } = string.Empty;
-
-        public DateTime GeneratedAtUtc { get; set; }
-
-        public string Source { get; set; } = string.Empty;
-
-        public string Seed { get; set; } = string.Empty;
-
-        public string Theme { get; set; } = string.Empty;
-
-        public AiEventSlot Slot { get; set; }
-
-        public string EngTitle { get; set; } = string.Empty;
-
-        public string ZhsTitle { get; set; } = string.Empty;
-
-        public string EngInitialDescription { get; set; } = string.Empty;
-
-        public string ZhsInitialDescription { get; set; } = string.Empty;
-
-        public string EventKey { get; set; } = string.Empty;
-
-        public static AiEventPoolIndexEntry FromPoolEntry(AiEventPoolEntry entry)
+        return new AiEventPoolEntrySummary
         {
-            return new AiEventPoolIndexEntry
-            {
-                EntryId = entry.EntryId,
-                GeneratedAtUtc = entry.GeneratedAtUtc,
-                Source = entry.Source,
-                Seed = entry.Seed,
-                Theme = entry.Theme,
-                Slot = entry.Payload.Slot,
-                EngTitle = entry.Payload.Eng?.Title ?? string.Empty,
-                ZhsTitle = entry.Payload.Zhs?.Title ?? string.Empty,
-                EngInitialDescription = entry.Payload.Eng?.InitialDescription ?? string.Empty,
-                ZhsInitialDescription = entry.Payload.Zhs?.InitialDescription ?? string.Empty,
-                EventKey = entry.Payload.EventKey ?? string.Empty,
-            };
-        }
+            EntryId = reader.GetString(reader.GetOrdinal("entry_id")),
+            GeneratedAtUtc = DateTime.Parse(reader.GetString(reader.GetOrdinal("generated_at_utc")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            Source = reader.GetString(reader.GetOrdinal("source")),
+            Seed = reader.GetString(reader.GetOrdinal("seed")),
+            Theme = reader.GetString(reader.GetOrdinal("theme")),
+            Slot = (AiEventSlot)reader.GetInt32(reader.GetOrdinal("slot")),
+            EngTitle = reader.GetString(reader.GetOrdinal("eng_title")),
+            ZhsTitle = reader.GetString(reader.GetOrdinal("zhs_title")),
+            EngInitialDescription = reader.GetString(reader.GetOrdinal("eng_initial_description")),
+            ZhsInitialDescription = reader.GetString(reader.GetOrdinal("zhs_initial_description")),
+            EventKey = reader.GetString(reader.GetOrdinal("event_key")),
+        };
+    }
 
-        public AiEventPoolEntrySummary ToSummary()
-        {
-            return new AiEventPoolEntrySummary
-            {
-                EntryId = EntryId,
-                GeneratedAtUtc = GeneratedAtUtc,
-                Source = Source,
-                Seed = Seed,
-                Theme = Theme,
-                Slot = Slot,
-                EngTitle = EngTitle,
-                ZhsTitle = ZhsTitle,
-                EngInitialDescription = EngInitialDescription,
-                ZhsInitialDescription = ZhsInitialDescription,
-                EventKey = EventKey,
-            };
-        }
+    private static void Vacuum(SqliteConnection connection)
+    {
+        using SqliteCommand vacuum = connection.CreateCommand();
+        vacuum.CommandText = "VACUUM;";
+        vacuum.ExecuteNonQuery();
     }
 }

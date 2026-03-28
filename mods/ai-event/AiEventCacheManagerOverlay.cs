@@ -38,6 +38,8 @@ public partial class AiEventCacheManagerOverlay : Control
 
     private const int PageSize = 40;
     private readonly List<AiEventPoolEntrySummary> _entries = new();
+    private readonly List<AiEventPoolEntrySummary> _currentEntries = new();
+    private int _totalEntryCount;
     private int _currentPage;
     private string? _editingEntryId;
     private NEventRoom? _previewRoom;
@@ -455,20 +457,25 @@ public partial class AiEventCacheManagerOverlay : Control
 
         try
         {
-            List<AiEventPoolEntrySummary> loadedEntries = await Task.Run(() =>
+            (int totalCount, List<AiEventPoolEntrySummary> pageEntries) = await Task.Run(() =>
             {
                 AiEventRepository.Initialize();
-                return AiEventRepository.GetAllPoolEntrySummaries().ToList();
+                int totalCount = AiEventRepository.GetPoolEntrySummaryCount();
+                List<AiEventPoolEntrySummary> pageEntries = AiEventRepository.GetPoolEntrySummariesPage(0, PageSize).ToList();
+                return (totalCount, pageEntries);
             });
 
+            _currentEntries.Clear();
+            _currentEntries.AddRange(pageEntries);
             _entries.Clear();
-            _entries.AddRange(loadedEntries);
+            _entries.AddRange(pageEntries);
+            _totalEntryCount = totalCount;
             _currentPage = 0;
 
             RefreshRunStats();
             await RebuildEntryRowsAsync();
 
-            if (_entries.Count == 0)
+            if (_totalEntryCount == 0)
             {
                 SetStatus("当前还没有缓存事件。");
                 return;
@@ -676,6 +683,8 @@ public partial class AiEventCacheManagerOverlay : Control
         {
             await Task.Run(() => AiEventRepository.DeletePoolEntry(entryId));
             _entries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            _currentEntries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            _totalEntryCount = Math.Max(0, _totalEntryCount - 1);
             ClampCurrentPage();
             RefreshRunStats();
             await RebuildEntryRowsAsync();
@@ -722,6 +731,8 @@ public partial class AiEventCacheManagerOverlay : Control
             });
 
             _entries.Clear();
+            _currentEntries.Clear();
+            _totalEntryCount = 0;
             _currentPage = 0;
             RefreshRunStats();
             await RebuildEntryRowsAsync();
@@ -1032,7 +1043,7 @@ public partial class AiEventCacheManagerOverlay : Control
 
     private int GetTotalPages()
     {
-        return _entries.Count == 0 ? 0 : (int)Math.Ceiling(_entries.Count / (double)PageSize);
+        return _totalEntryCount == 0 ? 0 : (int)Math.Ceiling(_totalEntryCount / (double)PageSize);
     }
 
     private int GetDisplayPageNumber()

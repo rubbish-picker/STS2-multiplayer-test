@@ -171,6 +171,26 @@ public static class AiEventRepository
         }
     }
 
+    public static int GetPoolEntrySummaryCount()
+    {
+        lock (SyncRoot)
+        {
+            return PoolDatabase.GetSummaryCount();
+        }
+    }
+
+    public static IReadOnlyList<AiEventPoolEntrySummary> GetPoolEntrySummariesPage(int pageIndex, int pageSize)
+    {
+        lock (SyncRoot)
+        {
+            int safePageIndex = Math.Max(0, pageIndex);
+            int safePageSize = Math.Max(1, pageSize);
+            return PoolDatabase.QuerySummariesPage(safePageIndex * safePageSize, safePageSize)
+                .Select(CloneSummary)
+                .ToList();
+        }
+    }
+
     public static AiEventPoolEntry? GetPoolEntryById(string entryId)
     {
         lock (SyncRoot)

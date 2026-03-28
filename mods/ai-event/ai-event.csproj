@@ -7,6 +7,7 @@
         <DefaultItemExcludes>packages/**</DefaultItemExcludes>
         <AppOutputBase>$(MSBuildProjectDirectory)\</AppOutputBase>
         <PathMap>$(AppOutputBase)=.\</PathMap>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -69,6 +70,8 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.6" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />
         <AdditionalFiles Include="ai-event/localization/**/*.json" />
     </ItemGroup>
 
@@ -108,7 +111,15 @@
 
     <Target Name="CopyToModsFolderOnBuild" AfterTargets="PostBuildEvent">
         <Message Text="Copying .dll and manifest to mods folder." Importance="high" />
-        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" />
+        <ItemGroup>
+            <AiEventRuntimeAssemblies Include="$(TargetDir)*.dll;$(TargetDir)*.json" Exclude="$(TargetDir)*.pdb" />
+            <AiEventRuntimeNativeFiles Include="$(TargetDir)runtimes\**\*.*" />
+        </ItemGroup>
+        <Copy SourceFiles="@(AiEventRuntimeAssemblies)" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" SkipUnchangedFiles="true" />
+        <Copy
+            SourceFiles="@(AiEventRuntimeNativeFiles)"
+            DestinationFiles="@(AiEventRuntimeNativeFiles->'$(ModsPath)$(MSBuildProjectName)\runtimes\%(RecursiveDir)%(Filename)%(Extension)')"
+            SkipUnchangedFiles="true" />
         <Copy SourceFiles="ai-event.json" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" />
         <Copy
             SourceFiles="ai-event.runtime.config"
@@ -130,6 +141,13 @@
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
         <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
+        <ItemGroup>
+            <AiEventPublishedFiles Include="$(PublishDir)**\*.*" Exclude="$(PublishDir)**\*.pdb;$(PublishDir)**\*.xml" />
+        </ItemGroup>
+        <Copy
+            SourceFiles="@(AiEventPublishedFiles)"
+            DestinationFiles="@(AiEventPublishedFiles->'$(ModsPath)$(MSBuildProjectName)\%(RecursiveDir)%(Filename)%(Extension)')"
+            SkipUnchangedFiles="true" />
         <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(ModsPath)$(MSBuildProjectName)/$(MSBuildProjectName).pck&quot;"
               EnvironmentVariables="IsInnerGodotExport=true;MSBUILDDISABLENODEREUSE=1"
               ContinueOnError="WarnAndContinue"/>
