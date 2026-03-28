@@ -473,7 +473,7 @@ public partial class AiEventCacheManagerOverlay : Control
             _currentPage = 0;
 
             RefreshRunStats();
-            await LoadPageAsync(_currentPage);
+            await RebuildEntryRowsAsync();
 
             if (_totalEntryCount == 0)
             {

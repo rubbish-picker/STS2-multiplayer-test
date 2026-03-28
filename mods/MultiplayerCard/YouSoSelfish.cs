@@ -40,7 +40,7 @@ public sealed class YouSoSelfish : CustomCardModel
         {
             new PowerVar<StrengthPower>(3),
             new DynamicVar(TeammateHpLossKey, 3),
-            new MaxHpVar(TeammateMaxHpLossKey, 3)
+            new MaxHpVar(TeammateMaxHpLossKey, 0)
         };
 
     protected override IEnumerable<IHoverTip> ExtraHoverTips =>
@@ -81,5 +81,6 @@ public sealed class YouSoSelfish : CustomCardModel
     protected override void OnUpgrade()
     {
         base.DynamicVars.Strength.UpgradeValueBy(3m);
+        base.DynamicVars[TeammateMaxHpLossKey].UpgradeValueBy(2m);
     }
 }
