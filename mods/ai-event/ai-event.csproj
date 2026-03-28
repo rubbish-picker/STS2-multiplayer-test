@@ -112,7 +112,7 @@
     <Target Name="CopyToModsFolderOnBuild" AfterTargets="PostBuildEvent">
         <Message Text="Copying .dll and manifest to mods folder." Importance="high" />
         <ItemGroup>
-            <AiEventRuntimeAssemblies Include="$(TargetDir)*.dll;$(TargetDir)*.json" Exclude="$(TargetDir)*.pdb" />
+            <AiEventRuntimeAssemblies Include="$(TargetDir)*.dll" Exclude="$(TargetDir)*.pdb" />
             <AiEventRuntimeNativeFiles Include="$(TargetDir)runtimes\**\*.*" />
         </ItemGroup>
         <Copy SourceFiles="@(AiEventRuntimeAssemblies)" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" SkipUnchangedFiles="true" />
@@ -128,10 +128,18 @@
         <Message Text="Copying runtime assets to mods folder." Importance="high" />
         <ItemGroup>
             <AiEventRuntimeFiles Include="runtime_assets\**\*.*" />
+            <AiEventImageFiles Include="images\**\*.*" />
+            <AiEventProjectFiles Include="project.godot;ai-event\**\*.*" />
         </ItemGroup>
         <Copy
             SourceFiles="@(AiEventRuntimeFiles)"
             DestinationFiles="@(AiEventRuntimeFiles->'$(ModsPath)$(MSBuildProjectName)\runtime_assets\%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy
+            SourceFiles="@(AiEventImageFiles)"
+            DestinationFiles="@(AiEventImageFiles->'$(ModsPath)$(MSBuildProjectName)\images\%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy
+            SourceFiles="@(AiEventProjectFiles)"
+            DestinationFiles="@(AiEventProjectFiles->'$(ModsPath)$(MSBuildProjectName)\%(RecursiveDir)%(Filename)%(Extension)')" />
         <Message Text="Copying BaseLib to mods folder." Importance="high" />
         <ItemGroup>
             <BaseLibFiles Include="$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/lib/net9.0/BaseLib.dll;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.pck;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.json;" />
@@ -142,7 +150,7 @@
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
         <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
         <ItemGroup>
-            <AiEventPublishedFiles Include="$(PublishDir)**\*.*" Exclude="$(PublishDir)**\*.pdb;$(PublishDir)**\*.xml" />
+            <AiEventPublishedFiles Include="$(PublishDir)**\*.*" Exclude="$(PublishDir)**\*.pdb;$(PublishDir)**\*.xml;$(PublishDir)**\*.deps.json;$(PublishDir)**\*.runtimeconfig.json" />
         </ItemGroup>
         <Copy
             SourceFiles="@(AiEventPublishedFiles)"

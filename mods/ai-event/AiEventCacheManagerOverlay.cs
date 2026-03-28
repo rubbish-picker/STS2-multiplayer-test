@@ -473,7 +473,7 @@ public partial class AiEventCacheManagerOverlay : Control
             _currentPage = 0;
 
             RefreshRunStats();
-            await RebuildEntryRowsAsync();
+            await LoadPageAsync(_currentPage);
 
             if (_totalEntryCount == 0)
             {
@@ -481,7 +481,7 @@ public partial class AiEventCacheManagerOverlay : Control
                 return;
             }
 
-            SetStatus($"已加载 {_entries.Count} 个缓存事件，当前显示第 {GetDisplayPageNumber()} 页。");
+            SetStatus($"已加载 {_totalEntryCount} 个缓存事件，当前显示第 {GetDisplayPageNumber()} 页。");
         }
         finally
         {
@@ -537,10 +537,9 @@ public partial class AiEventCacheManagerOverlay : Control
             child.QueueFree();
         }
 
-        ClampCurrentPage();
         RefreshPaginationUi();
 
-        if (_entries.Count == 0)
+        if (_currentEntries.Count == 0)
         {
             Label emptyLabel = new()
             {
@@ -551,13 +550,10 @@ public partial class AiEventCacheManagerOverlay : Control
             return;
         }
 
-        int startIndex = _currentPage * PageSize;
-        int endIndex = Math.Min(startIndex + PageSize, _entries.Count);
-
-        for (int i = startIndex; i < endIndex; i++)
+        for (int i = 0; i < _currentEntries.Count; i++)
         {
-            _entryRows.AddChild(CreateEntryRow(_entries[i]));
-            if (((i - startIndex) + 1) % 20 == 0)
+            _entryRows.AddChild(CreateEntryRow(_currentEntries[i]));
+            if ((i + 1) % 20 == 0)
             {
                 await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             }
@@ -766,6 +762,7 @@ public partial class AiEventCacheManagerOverlay : Control
         try
         {
             ClosePreviewModal();
+            PreloadPreviewAssets(entry.Payload.Slot);
             AiEventRepository.Initialize();
 
             _previewRestorePayload = AiEventRepository.Get(entry.Payload.Slot);
@@ -870,9 +867,182 @@ public partial class AiEventCacheManagerOverlay : Control
                 continue;
             }
 
-            button.Connect(NClickableControl.SignalName.Released, Callable.From<NButton>(_ => ClosePreviewModal()));
+            button.Connect(NClickableControl.SignalName.Released, Callable.From<NClickableControl>(_ => ClosePreviewModal()));
             button.SetMeta("ai_event_preview_close_hooked", true);
         }
+    }
+
+    private static void PreloadPreviewAssets(AiEventSlot slot)
+    {
+        try
+        {
+            ResourceLoader.Load<PackedScene>("res://scenes/events/default_event_layout.tscn");
+            ResourceLoader.Load<Texture2D>($"res://images/events/{AiEventRegistry.GetImageFileName(slot)}");
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Warn($"[ai-event] failed to preload preview assets for {slot}: {ex.Message}");
+        }
+    }
+
+    private Control BuildPreviewContent(AiEventPoolEntry entry)
+    {
+        AiGeneratedEventPayload payload = ClonePreviewPayload(entry);
+        bool useChinese = string.Equals(LocManager.Instance?.Language, "zhs", StringComparison.OrdinalIgnoreCase);
+        AiLocalizedEventText text = useChinese ? payload.Zhs : payload.Eng;
+        AiLocalizedEventText fallbackText = useChinese ? payload.Eng : payload.Zhs;
+
+        MarginContainer margin = new();
+        margin.AddThemeConstantOverride("margin_left", 48);
+        margin.AddThemeConstantOverride("margin_right", 48);
+        margin.AddThemeConstantOverride("margin_top", 36);
+        margin.AddThemeConstantOverride("margin_bottom", 36);
+
+        ScrollContainer scroll = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        margin.AddChild(scroll);
+
+        VBoxContainer root = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ShrinkBegin,
+            CustomMinimumSize = new Vector2(0f, 720f),
+        };
+        root.AddThemeConstantOverride("separation", 18);
+        scroll.AddChild(root);
+
+        MegaRichTextLabel title = CreateRichText($"[center][b]{EscapeBb(FirstNonEmpty(text.Title, fallbackText.Title, GetDisplayTitle(entry)))}[/b][/center]", 28);
+        title.CustomMinimumSize = new Vector2(0f, 56f);
+        title.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        root.AddChild(title);
+
+        MegaRichTextLabel meta = CreateRichText($"[center]{EscapeBb(BuildRowMeta(entry))}[/center]", 16);
+        meta.CustomMinimumSize = new Vector2(0f, 52f);
+        meta.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        root.AddChild(meta);
+
+        PanelContainer descriptionPanel = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0f, 220f),
+        };
+        root.AddChild(descriptionPanel);
+
+        MarginContainer descriptionMargin = new();
+        descriptionMargin.AddThemeConstantOverride("margin_left", 28);
+        descriptionMargin.AddThemeConstantOverride("margin_right", 28);
+        descriptionMargin.AddThemeConstantOverride("margin_top", 24);
+        descriptionMargin.AddThemeConstantOverride("margin_bottom", 24);
+        descriptionPanel.AddChild(descriptionMargin);
+
+        MegaRichTextLabel description = CreateRichText(EscapeBb(FirstNonEmpty(text.InitialDescription, fallbackText.InitialDescription)), 24);
+        description.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        description.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+        descriptionMargin.AddChild(description);
+
+        VBoxContainer options = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ShrinkBegin,
+        };
+        options.AddThemeConstantOverride("separation", 12);
+        root.AddChild(options);
+
+        for (int i = 0; i < payload.Options.Count; i++)
+        {
+            AiEventOptionPayload optionPayload = payload.Options[i];
+            AiLocalizedOptionText optionText = GetOptionText(optionPayload.Key, text, fallbackText);
+
+            Button optionButton = new()
+            {
+                Text = BuildPreviewOptionLabel(i, optionText),
+                Alignment = HorizontalAlignment.Left,
+                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(0f, 84f),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
+            optionButton.Pressed += ClosePreviewModal;
+            optionButton.TooltipText = BuildPreviewOptionTooltip(optionText, optionPayload);
+            options.AddChild(optionButton);
+        }
+
+        return margin;
+    }
+
+    private static AiLocalizedOptionText GetOptionText(string key, AiLocalizedEventText preferred, AiLocalizedEventText fallback)
+    {
+        return preferred.Options.FirstOrDefault(option => string.Equals(option.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?? fallback.Options.FirstOrDefault(option => string.Equals(option.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?? new AiLocalizedOptionText { Key = key };
+    }
+
+    private static string BuildPreviewOptionLabel(int index, AiLocalizedOptionText optionText)
+    {
+        string body = FirstNonEmpty(optionText.Title, optionText.Description, optionText.Key);
+        return $"[{index + 1}] {body}";
+    }
+
+    private static string BuildPreviewOptionTooltip(AiLocalizedOptionText optionText, AiEventOptionPayload optionPayload)
+    {
+        List<string> parts = new();
+        string description = FirstNonEmpty(optionText.Description, optionText.ResultDescription);
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            parts.Add(description);
+        }
+
+        string effects = string.Join(" | ", optionPayload.Effects.Select(FormatEffectSummary).Where(value => !string.IsNullOrWhiteSpace(value)));
+        if (!string.IsNullOrWhiteSpace(effects))
+        {
+            parts.Add(effects);
+        }
+
+        return string.Join("\n", parts);
+    }
+
+    private static string FormatEffectSummary(AiEventEffectPayload effect)
+    {
+        return effect.Type switch
+        {
+            "gain_gold" => $"获得 {effect.Amount} 金币",
+            "lose_gold" => $"失去 {effect.Amount} 金币",
+            "heal" => $"回复 {effect.Amount} 生命",
+            "damage_self" => $"失去 {effect.Amount} 生命",
+            "gain_max_hp" => $"获得 {effect.Amount} 最大生命",
+            "lose_max_hp" => $"失去 {effect.Amount} 最大生命",
+            "upgrade_cards" => $"升级 {effect.Count} 张牌",
+            "upgrade_random" => $"随机升级 {effect.Count} 张牌",
+            "remove_cards" => $"移除 {effect.Count} 张牌",
+            "add_curse" => $"加入 {effect.Count} 张诅咒牌: {FirstNonEmpty(effect.CardId, "unknown")}",
+            "obtain_random_relic" => $"获得 {effect.Count} 个随机遗物",
+            _ => effect.Type,
+        };
+    }
+
+    private async Task LoadPageAsync(int pageIndex)
+    {
+        ClampCurrentPage();
+        int targetPage = Math.Max(0, pageIndex);
+        int lastPageIndex = Math.Max(0, GetTotalPages() - 1);
+        targetPage = Math.Min(targetPage, lastPageIndex);
+
+        List<AiEventPoolEntrySummary> pageEntries = await Task.Run(() =>
+        {
+            AiEventRepository.Initialize();
+            return AiEventRepository.GetPoolEntrySummariesPage(targetPage, PageSize).ToList();
+        });
+
+        _currentPage = targetPage;
+        _currentEntries.Clear();
+        _currentEntries.AddRange(pageEntries);
+        _entries.Clear();
+        _entries.AddRange(pageEntries);
+        await RebuildEntryRowsAsync();
     }
 
     private bool TryReadEditorEntry(out AiEventPoolEntry? entry, out string error)
@@ -1002,8 +1172,7 @@ public partial class AiEventCacheManagerOverlay : Control
             return;
         }
 
-        _currentPage--;
-        _ = RebuildEntryRowsAsync();
+        _ = LoadPageAsync(_currentPage - 1);
         SetStatus($"已切换到第 {GetDisplayPageNumber()} 页。");
     }
 
@@ -1020,8 +1189,7 @@ public partial class AiEventCacheManagerOverlay : Control
             return;
         }
 
-        _currentPage++;
-        _ = RebuildEntryRowsAsync();
+        _ = LoadPageAsync(_currentPage + 1);
         SetStatus($"已切换到第 {GetDisplayPageNumber()} 页。");
     }
 
