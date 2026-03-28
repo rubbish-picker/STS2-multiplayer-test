@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using BaseLib.Config;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Runs;
@@ -47,6 +48,8 @@ public static class MultiplayerCardConfigService
     };
 
     public static MultiplayerCardRuntimeConfig Current { get; private set; } = new();
+
+    public static MultiplayerCardRuntimeConfig? SyncedFromHost { get; private set; }
 
     public static MultiplayerCardModConfig? UiConfig { get; private set; }
 
@@ -98,6 +101,28 @@ public static class MultiplayerCardConfigService
         Save();
     }
 
+    public static MultiplayerCardRuntimeConfig GetEffectiveConfig()
+    {
+        return RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null
+            ? SyncedFromHost
+            : Current;
+    }
+
+    public static void ApplyHostConfig(MultiplayerCardRuntimeConfig config)
+    {
+        SyncedFromHost = new MultiplayerCardRuntimeConfig
+        {
+            Mode = config.Mode,
+            AppearanceMode = config.AppearanceMode,
+            HighProbabilityRewardChance = config.HighProbabilityRewardChance,
+        };
+    }
+
+    public static void ClearHostConfig()
+    {
+        SyncedFromHost = null;
+    }
+
     public static string GetModDirectory()
     {
         string? location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
@@ -106,17 +131,17 @@ public static class MultiplayerCardConfigService
 
     public static MultiplayerCardMode GetMode()
     {
-        return ParseMode(Current.Mode);
+        return ParseMode(GetEffectiveConfig().Mode);
     }
 
     public static MultiplayerCardAppearanceMode GetAppearanceMode()
     {
-        return ParseAppearanceMode(Current.AppearanceMode);
+        return ParseAppearanceMode(GetEffectiveConfig().AppearanceMode);
     }
 
     public static double GetHighProbabilityRewardChance()
     {
-        return Math.Clamp(Current.HighProbabilityRewardChance, 0d, 1d);
+        return Math.Clamp(GetEffectiveConfig().HighProbabilityRewardChance, 0d, 1d);
     }
 
     public static bool IsSingleplayerUniversalFallbackEnabled(IRunState? runState)
