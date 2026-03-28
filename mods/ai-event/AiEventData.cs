@@ -92,6 +92,31 @@ public sealed class AiEventPoolEntry
     public AiGeneratedEventPayload Payload { get; set; } = new();
 }
 
+public sealed class AiEventPoolEntrySummary
+{
+    public string EntryId { get; set; } = string.Empty;
+
+    public DateTime GeneratedAtUtc { get; set; }
+
+    public string Source { get; set; } = string.Empty;
+
+    public string Seed { get; set; } = string.Empty;
+
+    public string Theme { get; set; } = string.Empty;
+
+    public AiEventSlot Slot { get; set; }
+
+    public string EngTitle { get; set; } = string.Empty;
+
+    public string ZhsTitle { get; set; } = string.Empty;
+
+    public string EngInitialDescription { get; set; } = string.Empty;
+
+    public string ZhsInitialDescription { get; set; } = string.Empty;
+
+    public string EventKey { get; set; } = string.Empty;
+}
+
 public sealed class AiEventThemePlan
 {
     [JsonPropertyName("slot")]

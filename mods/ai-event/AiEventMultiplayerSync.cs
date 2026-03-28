@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Threading;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
-using MegaCrit.Sts2.Core.Multiplayer.Messages.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Multiplayer.Transport;
 using MegaCrit.Sts2.Core.Runs;
@@ -19,29 +19,33 @@ public static class AiEventMultiplayerSync
         PropertyNamingPolicy = null,
     };
 
-    private static RunLocationTargetedMessageBuffer? _buffer;
     private static INetGameService? _netService;
     private static bool _registered;
+    private static bool _configRegistered;
 
     public static void InitializeForRun()
     {
         RunManager manager = RunManager.Instance;
         INetGameService? netService = manager.NetService;
-        RunLocationTargetedMessageBuffer? buffer = manager.RunLocationTargetedBuffer;
-        if (netService == null || buffer == null)
+        if (netService == null)
         {
             return;
         }
 
         lock (SyncRoot)
         {
-            if (_registered && !ReferenceEquals(_buffer, buffer))
+            if (_registered && !ReferenceEquals(_netService, netService) && _netService != null)
             {
-                _buffer!.UnregisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
+                _netService.UnregisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
                 _registered = false;
             }
 
-            _buffer = buffer;
+            if (_configRegistered && !ReferenceEquals(_netService, netService) && _netService != null)
+            {
+                _netService.UnregisterMessageHandler<AiEventConfigMessage>(HandleConfigMessage);
+                _configRegistered = false;
+            }
+
             _netService = netService;
 
             if (_registered)
@@ -49,9 +53,15 @@ public static class AiEventMultiplayerSync
                 return;
             }
 
-            _buffer.RegisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
+            _netService.RegisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
             _registered = true;
             PendingSelections.Clear();
+
+            if (!_configRegistered)
+            {
+                _netService.RegisterMessageHandler<AiEventConfigMessage>(HandleConfigMessage);
+                _configRegistered = true;
+            }
         }
     }
 
@@ -59,16 +69,23 @@ public static class AiEventMultiplayerSync
     {
         lock (SyncRoot)
         {
-            if (_registered && _buffer != null)
+            if (_registered && _netService != null)
             {
-                _buffer.UnregisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
+                _netService.UnregisterMessageHandler<AiEventSelectionMessage>(HandleSelectionMessage);
+            }
+
+            if (_configRegistered && _netService != null)
+            {
+                _netService.UnregisterMessageHandler<AiEventConfigMessage>(HandleConfigMessage);
             }
 
             PendingSelections.Clear();
             _registered = false;
-            _buffer = null;
+            _configRegistered = false;
             _netService = null;
         }
+
+        AiEventConfigService.ClearHostConfig();
     }
 
     public static bool IsClientControlled()
@@ -81,12 +98,29 @@ public static class AiEventMultiplayerSync
         return RunManager.Instance.NetService?.Type == NetGameType.Host;
     }
 
+    public static void BroadcastConfig()
+    {
+        INetGameService? netService = RunManager.Instance.NetService;
+        if (netService?.Type != NetGameType.Host)
+        {
+            return;
+        }
+
+        AiEventRuntimeConfig config = AiEventConfigService.GetEffectiveConfig();
+        netService.SendMessage(new AiEventConfigMessage
+        {
+            configJson = JsonSerializer.Serialize(config, JsonOptions),
+        });
+
+        MainFile.Logger.Info($"[ai-event] broadcast host config: mode={config.Mode}.");
+    }
+
     public static void BroadcastSelection(AiEventSelectionDecision decision)
     {
         RunManager manager = RunManager.Instance;
         INetGameService? netService = manager.NetService;
-        RunLocationTargetedMessageBuffer? buffer = manager.RunLocationTargetedBuffer;
-        if (netService?.Type != NetGameType.Host || buffer == null)
+        RunState? state = manager.DebugOnlyGetState();
+        if (netService?.Type != NetGameType.Host || state == null)
         {
             return;
         }
@@ -94,7 +128,7 @@ public static class AiEventMultiplayerSync
         string payloadJson = decision.Payload == null ? string.Empty : JsonSerializer.Serialize(decision.Payload, JsonOptions);
         AiEventSelectionMessage message = new()
         {
-            location = buffer.CurrentLocation,
+            location = state.CurrentLocation,
             useVanilla = decision.UseVanilla,
             titlePrefix = decision.TitlePrefix ?? string.Empty,
             payloadJson = payloadJson,
@@ -103,31 +137,44 @@ public static class AiEventMultiplayerSync
         netService.SendMessage(message);
     }
 
-    public static bool TryConsumeSelection(out AiEventSelectionDecision decision)
+    public static bool TryConsumeSelection(RunLocation location, out AiEventSelectionDecision decision, int timeoutMs = 0)
     {
-        decision = default;
+        DateTime deadline = timeoutMs > 0
+            ? DateTime.UtcNow.AddMilliseconds(timeoutMs)
+            : DateTime.UtcNow;
 
-        RunLocationTargetedMessageBuffer? buffer = RunManager.Instance.RunLocationTargetedBuffer;
-        if (buffer == null)
+        while (true)
         {
-            return false;
-        }
+            decision = default;
+            lock (SyncRoot)
+            {
+                if (PendingSelections.TryGetValue(location, out Queue<AiEventSelectionDecision>? queue) && queue.Count > 0)
+                {
+                    decision = queue.Dequeue();
+                    if (queue.Count == 0)
+                    {
+                        PendingSelections.Remove(location);
+                    }
 
-        RunLocation currentLocation = buffer.CurrentLocation;
-        lock (SyncRoot)
-        {
-            if (!PendingSelections.TryGetValue(currentLocation, out Queue<AiEventSelectionDecision>? queue) || queue.Count == 0)
+                    return true;
+                }
+            }
+
+            if (DateTime.UtcNow >= deadline)
             {
                 return false;
             }
 
-            decision = queue.Dequeue();
-            if (queue.Count == 0)
+            try
             {
-                PendingSelections.Remove(currentLocation);
+                (_netService ?? RunManager.Instance.NetService)?.Update();
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Warn($"[ai-event] failed while pumping multiplayer messages during host selection wait: {ex.Message}");
             }
 
-            return true;
+            Thread.Sleep(25);
         }
     }
 
@@ -150,14 +197,40 @@ public static class AiEventMultiplayerSync
                     : JsonSerializer.Deserialize<AiGeneratedEventPayload>(message.payloadJson, JsonOptions),
             };
 
-            if (!PendingSelections.TryGetValue(message.Location, out Queue<AiEventSelectionDecision>? queue))
+            if (!PendingSelections.TryGetValue(message.location, out Queue<AiEventSelectionDecision>? queue))
             {
                 queue = new Queue<AiEventSelectionDecision>();
-                PendingSelections[message.Location] = queue;
+                PendingSelections[message.location] = queue;
             }
 
             queue.Enqueue(decision);
-            MainFile.Logger.Info($"[ai-event] received host event selection for {message.Location} from {senderId}.");
+            MainFile.Logger.Info($"[ai-event] received host event selection for {message.location} from {senderId}.");
+        }
+    }
+
+    private static void HandleConfigMessage(AiEventConfigMessage message, ulong senderId)
+    {
+        lock (SyncRoot)
+        {
+            INetGameService? netService = _netService ?? RunManager.Instance.NetService;
+            if (netService?.Type != NetGameType.Client)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(message.configJson))
+            {
+                return;
+            }
+
+            AiEventRuntimeConfig? config = JsonSerializer.Deserialize<AiEventRuntimeConfig>(message.configJson, JsonOptions);
+            if (config == null)
+            {
+                return;
+            }
+
+            AiEventConfigService.ApplyHostConfig(config);
+            MainFile.Logger.Info($"[ai-event] received host config from {senderId}: mode={config.Mode}.");
         }
     }
 }
@@ -171,7 +244,7 @@ public struct AiEventSelectionDecision
     public AiGeneratedEventPayload? Payload { get; init; }
 }
 
-public struct AiEventSelectionMessage : INetMessage, IRunLocationTargetedMessage
+public struct AiEventSelectionMessage : INetMessage
 {
     public RunLocation location;
 
@@ -184,8 +257,6 @@ public struct AiEventSelectionMessage : INetMessage, IRunLocationTargetedMessage
     public bool ShouldBroadcast => false;
 
     public NetTransferMode Mode => NetTransferMode.Reliable;
-
-    public RunLocation Location => location;
 
     public LogLevel LogLevel => LogLevel.Debug;
 
@@ -208,5 +279,26 @@ public struct AiEventSelectionMessage : INetMessage, IRunLocationTargetedMessage
     public override string ToString()
     {
         return $"{nameof(AiEventSelectionMessage)} location: {location} useVanilla: {useVanilla}";
+    }
+}
+
+public struct AiEventConfigMessage : INetMessage
+{
+    public string configJson;
+
+    public bool ShouldBroadcast => false;
+
+    public NetTransferMode Mode => NetTransferMode.Reliable;
+
+    public LogLevel LogLevel => LogLevel.Debug;
+
+    public void Serialize(PacketWriter writer)
+    {
+        writer.WriteString(configJson ?? string.Empty);
+    }
+
+    public void Deserialize(PacketReader reader)
+    {
+        configJson = reader.ReadString();
     }
 }

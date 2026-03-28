@@ -4,12 +4,14 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BaseLib.Config;
+using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace MultiplayerCard;
 
@@ -50,6 +52,8 @@ public static class MultiplayerCardConfigService
     public static MultiplayerCardRuntimeConfig Current { get; private set; } = new();
 
     public static MultiplayerCardRuntimeConfig? SyncedFromHost { get; private set; }
+
+    public static MultiplayerCardRuntimeConfig? LockedForRun { get; private set; }
 
     public static MultiplayerCardModConfig? UiConfig { get; private set; }
 
@@ -103,6 +107,11 @@ public static class MultiplayerCardConfigService
 
     public static MultiplayerCardRuntimeConfig GetEffectiveConfig()
     {
+        if (LockedForRun != null)
+        {
+            return LockedForRun;
+        }
+
         return RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null
             ? SyncedFromHost
             : Current;
@@ -110,17 +119,65 @@ public static class MultiplayerCardConfigService
 
     public static void ApplyHostConfig(MultiplayerCardRuntimeConfig config)
     {
-        SyncedFromHost = new MultiplayerCardRuntimeConfig
-        {
-            Mode = config.Mode,
-            AppearanceMode = config.AppearanceMode,
-            HighProbabilityRewardChance = config.HighProbabilityRewardChance,
-        };
+        SyncedFromHost = CloneConfig(config);
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? true;
+        LockForRun(SyncedFromHost, persistToDisk: false, isMultiplayer);
     }
 
     public static void ClearHostConfig()
     {
         SyncedFromHost = null;
+    }
+
+    public static void PrepareForNewRun(bool isMultiplayer)
+    {
+        LockForRun(Current, persistToDisk: true, isMultiplayer);
+    }
+
+    public static void EnsureRunConfigLoaded()
+    {
+        if (LockedForRun != null)
+        {
+            return;
+        }
+
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+        MultiplayerCardRuntimeConfig? persisted = TryLoadRunConfigFromDisk(isMultiplayer);
+        if (persisted != null)
+        {
+            LockForRun(persisted, persistToDisk: false, isMultiplayer);
+            MainFile.Logger.Info($"[MultiplayerCard] loaded persisted run config: mode={persisted.Mode}, appearance={persisted.AppearanceMode}, chance={persisted.HighProbabilityRewardChance:0.##}.");
+            return;
+        }
+
+        if (RunManager.Instance.NetService?.Type != NetGameType.Client)
+        {
+            LockForRun(Current, persistToDisk: true, isMultiplayer);
+            MainFile.Logger.Info($"[MultiplayerCard] no persisted run config found; using current config for this run: mode={Current.Mode}, appearance={Current.AppearanceMode}, chance={Current.HighProbabilityRewardChance:0.##}.");
+        }
+    }
+
+    public static void ClearRunLockInMemory()
+    {
+        LockedForRun = null;
+    }
+
+    public static void ClearPersistedRunConfig(bool isMultiplayer)
+    {
+        string path = GetRunSessionConfigPath(isMultiplayer);
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                MainFile.Logger.Info($"[MultiplayerCard] cleared persisted run config at {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to clear persisted MultiplayerCard run config: {ex}");
+        }
     }
 
     public static string GetModDirectory()
@@ -243,6 +300,75 @@ public static class MultiplayerCardConfigService
         UiConfig.ConfigChanged += (_, _) => SaveFromUiConfig();
         ModConfigRegistry.Register(MainFile.ModId, UiConfig);
         SaveFromUiConfig();
+    }
+
+    private static void LockForRun(MultiplayerCardRuntimeConfig config, bool persistToDisk, bool isMultiplayer)
+    {
+        LockedForRun = CloneConfig(config);
+
+        if (!persistToDisk)
+        {
+            return;
+        }
+
+        try
+        {
+            string path = GetRunSessionConfigPath(isMultiplayer);
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, JsonSerializer.Serialize(LockedForRun, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to persist MultiplayerCard run config: {ex}");
+        }
+    }
+
+    private static MultiplayerCardRuntimeConfig? TryLoadRunConfigFromDisk(bool isMultiplayer)
+    {
+        string path = GetRunSessionConfigPath(isMultiplayer);
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            string json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<MultiplayerCardRuntimeConfig>(json, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to load persisted MultiplayerCard run config: {ex}");
+            return null;
+        }
+    }
+
+    private static string GetRunSessionConfigPath(bool isMultiplayer)
+    {
+        string fileName = isMultiplayer
+            ? "MultiplayerCard.current_run_mp.config"
+            : "MultiplayerCard.current_run.config";
+
+        string godotPath = SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, fileName));
+        return godotPath.StartsWith("user://", StringComparison.OrdinalIgnoreCase)
+            ? ProjectSettings.GlobalizePath(godotPath)
+            : godotPath;
+    }
+
+    private static MultiplayerCardRuntimeConfig CloneConfig(MultiplayerCardRuntimeConfig config)
+    {
+        return new MultiplayerCardRuntimeConfig
+        {
+            Mode = config.Mode,
+            AppearanceMode = config.AppearanceMode,
+            HighProbabilityRewardChance = config.HighProbabilityRewardChance,
+        };
     }
 }
 

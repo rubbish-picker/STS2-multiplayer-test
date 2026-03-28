@@ -25,7 +25,7 @@ public static class AiEventRuntimeService
 
     private static AiEventRunSession? _currentSession;
 
-    private static string SessionStatePath => Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.run_session.json");
+    private static string SessionStatePath => AiEventStorage.GetCurrentSessionStatePath();
 
     public static void BeginRun(string seed, IReadOnlyList<ActModel> acts)
     {
@@ -97,13 +97,12 @@ public static class AiEventRuntimeService
 
         if (AiEventMultiplayerSync.IsClientControlled())
         {
-            if (AiEventMultiplayerSync.TryConsumeSelection(out AiEventSelectionDecision syncedDecision))
+            if (AiEventMultiplayerSync.TryConsumeSelection(runState.CurrentLocation, out AiEventSelectionDecision syncedDecision, timeoutMs: 15000))
             {
                 return ApplySelectionDecision(syncedDecision, vanillaEvent);
             }
 
-            MainFile.Logger.Warn($"[ai-event] client did not receive host selection in time for act {runState.Act.Id.Entry}; falling back to vanilla.");
-            return vanillaEvent;
+            throw new InvalidOperationException($"[ai-event] client did not receive host event selection for location {runState.CurrentLocation} in act {runState.Act.Id.Entry} within 15 seconds. Refusing to fallback locally because multiplayer must stay host-authoritative.");
         }
 
         if (mode == AiEventMode.Vanilla)
@@ -120,7 +119,7 @@ public static class AiEventRuntimeService
         }
 
         List<AiEventSlot> allowedSlots = new() { actSlot.Value, AiEventSlot.Shared };
-        IReadOnlyList<AiEventPoolEntry> cachedCandidates = AiEventRepository.GetLatestPoolEntries(allowedSlots, AiEventConfigService.Current.CachePoolLimit);
+        IReadOnlyList<AiEventPoolEntry> cachedCandidates = AiEventRepository.GetLatestPoolEntries(allowedSlots, AiEventConfigService.GetEffectiveConfig().CachePoolLimit);
 
         if (mode == AiEventMode.VanillaPlusCache)
         {
@@ -155,11 +154,6 @@ public static class AiEventRuntimeService
     public static bool ShouldForceUnknownNodesToEvents()
     {
         AiEventConfigService.Reload();
-        if (AiEventMultiplayerSync.IsClientControlled())
-        {
-            return false;
-        }
-
         return AiEventConfigService.GetMode() == AiEventMode.LlmDebug;
     }
 
@@ -184,6 +178,7 @@ public static class AiEventRuntimeService
 
         try
         {
+            AiEventStorage.EnsureDirectoryForFile(SessionStatePath);
             if (File.Exists(SessionStatePath))
             {
                 File.Delete(SessionStatePath);
@@ -225,6 +220,35 @@ public static class AiEventRuntimeService
         return LoadPersistedRunStats();
     }
 
+    public static AiEventRunStatsSummary GetRunStatsSummary()
+    {
+        AiEventConfigService.Reload();
+
+        bool currentIsMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+        AiEventRunStats? inMemoryStats = null;
+        lock (SyncRoot)
+        {
+            if (_currentSession != null)
+            {
+                inMemoryStats = BuildStats(_currentSession);
+            }
+        }
+
+        AiEventRunStats singleplayerStats = currentIsMultiplayer
+            ? LoadPersistedRunStats(isMultiplayer: false)
+            : inMemoryStats ?? LoadPersistedRunStats(isMultiplayer: false);
+        AiEventRunStats multiplayerStats = currentIsMultiplayer
+            ? inMemoryStats ?? LoadPersistedRunStats(isMultiplayer: true)
+            : LoadPersistedRunStats(isMultiplayer: true);
+
+        return new AiEventRunStatsSummary
+        {
+            Singleplayer = singleplayerStats,
+            Multiplayer = multiplayerStats,
+            CurrentContextIsMultiplayer = currentIsMultiplayer,
+        };
+    }
+
     private static AiEventRunSession? GetCurrentSession(string? seed)
     {
         lock (SyncRoot)
@@ -245,14 +269,21 @@ public static class AiEventRuntimeService
 
     private static AiEventRunStats LoadPersistedRunStats()
     {
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+        return LoadPersistedRunStats(isMultiplayer);
+    }
+
+    private static AiEventRunStats LoadPersistedRunStats(bool isMultiplayer)
+    {
         try
         {
-            if (!File.Exists(SessionStatePath))
+            string sessionStatePath = AiEventStorage.GetSessionStatePath(isMultiplayer);
+            if (!File.Exists(sessionStatePath))
             {
                 return AiEventRunStats.Empty;
             }
 
-            string json = File.ReadAllText(SessionStatePath);
+            string json = File.ReadAllText(sessionStatePath);
             AiEventRunSessionState? state = JsonSerializer.Deserialize<AiEventRunSessionState>(json, JsonOptions);
             if (state == null || string.IsNullOrWhiteSpace(state.Seed))
             {
@@ -307,8 +338,9 @@ public static class AiEventRuntimeService
 
     private static AiEventSelectionDecision TryChooseCachedOrVanilla(RunState runState, IReadOnlyList<AiEventPoolEntry> cachedCandidates)
     {
-        double vanillaWeight = Math.Max(0d, AiEventConfigService.Current.VanillaWeight);
-        double cacheWeight = cachedCandidates.Count > 0 ? Math.Max(0d, AiEventConfigService.Current.CacheWeight) : 0d;
+        AiEventRuntimeConfig config = AiEventConfigService.GetEffectiveConfig();
+        double vanillaWeight = Math.Max(0d, config.VanillaWeight);
+        double cacheWeight = cachedCandidates.Count > 0 ? Math.Max(0d, config.CacheWeight) : 0d;
 
         if (cacheWeight <= 0d)
         {
@@ -332,13 +364,14 @@ public static class AiEventRuntimeService
         IReadOnlyList<AiEventPoolEntry> cachedCandidates)
     {
         IReadOnlyList<AiEventPoolEntry> filteredCachedCandidates = FilterCacheCandidatesForDynamicMode(session, cachedCandidates);
+        AiEventRuntimeConfig config = AiEventConfigService.GetEffectiveConfig();
         double dynamicWeight = session != null && HasDynamicEntry(session, allowedSlots)
-            ? Math.Max(0d, AiEventConfigService.Current.DynamicWeight)
+            ? Math.Max(0d, config.DynamicWeight)
             : 0d;
         double cacheWeight = filteredCachedCandidates.Count > 0
-            ? Math.Max(0d, AiEventConfigService.Current.CacheWeight)
+            ? Math.Max(0d, config.CacheWeight)
             : 0d;
-        double vanillaWeight = Math.Max(0d, AiEventConfigService.Current.VanillaWeight);
+        double vanillaWeight = Math.Max(0d, config.VanillaWeight);
 
         string source = RollSource(runState, dynamicWeight, cacheWeight, vanillaWeight);
         switch (source)
@@ -1019,6 +1052,7 @@ public static class AiEventRuntimeService
                 };
             }
 
+            AiEventStorage.EnsureDirectoryForFile(SessionStatePath);
             File.WriteAllText(SessionStatePath, JsonSerializer.Serialize(state, JsonOptions));
         }
         catch (Exception ex)
@@ -1077,7 +1111,7 @@ public static class AiEventRuntimeService
 
         private static List<AiEventSlot> BuildGenerationPlan(IReadOnlyList<AiEventSlot> actSlots)
         {
-            int target = Math.Max(1, AiEventConfigService.Current.DynamicEventsPerRun);
+            int target = Math.Max(1, AiEventConfigService.GetEffectiveConfig().DynamicEventsPerRun);
             if (actSlots.Count == 0)
             {
                 return Enumerable.Repeat(AiEventSlot.Shared, target).ToList();
@@ -1192,4 +1226,13 @@ public sealed class AiEventRunStats
     public bool IsGenerating { get; init; }
 
     public int DiscardedCount { get; init; }
+}
+
+public sealed class AiEventRunStatsSummary
+{
+    public AiEventRunStats Singleplayer { get; init; } = AiEventRunStats.Empty;
+
+    public AiEventRunStats Multiplayer { get; init; } = AiEventRunStats.Empty;
+
+    public bool CurrentContextIsMultiplayer { get; init; }
 }

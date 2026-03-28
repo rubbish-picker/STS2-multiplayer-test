@@ -23,7 +23,6 @@ public static class AiEventGenerationService
 
     public static void Initialize()
     {
-        AiEventRepository.Initialize();
         if (MegaCrit.Sts2.Core.Localization.LocManager.Instance != null)
         {
             AiEventLocalization.ApplyCurrentLanguage();
@@ -32,7 +31,7 @@ public static class AiEventGenerationService
 
     public static bool HasApiConfig()
     {
-        AiEventRuntimeConfig config = AiEventConfigService.Current;
+        AiEventRuntimeConfig config = AiEventConfigService.GetEffectiveConfig();
         return !string.IsNullOrWhiteSpace(config.BaseUrl)
             && !string.IsNullOrWhiteSpace(config.ApiKey)
             && !string.IsNullOrWhiteSpace(config.Model);
@@ -62,7 +61,7 @@ public static class AiEventGenerationService
             string response = await SendChatCompletionAsync(
                 "You are a connectivity probe for a Slay the Spire 2 mod. Reply with only OK.",
                 "Reply with only OK.",
-                Math.Min(Math.Max(15, AiEventConfigService.Current.RequestTimeoutSeconds), 20),
+                Math.Min(Math.Max(15, AiEventConfigService.GetEffectiveConfig().RequestTimeoutSeconds), 20),
                 32,
                 cancellationToken);
 
@@ -172,7 +171,8 @@ public static class AiEventGenerationService
                 userPrompt +=
                     "\n\nYour previous answer was rejected. Regenerate from scratch and follow these corrections exactly:\n" +
                     lastError +
-                    "\nPay extra attention to JSON validity, supported effect types, legal curse card ids, and aligned option text.";
+                    "\nPay extra attention to JSON validity, supported effect types, legal curse card ids, and aligned option text." +
+                    "\nFor `add_curse`, prioritize a correct `card_id`; runtime will rewrite localized curse naming from the id.";
             }
 
             try
@@ -415,6 +415,8 @@ public static class AiEventGenerationService
             "Only use supported effect types from the schema. Do not invent custom mechanics.\n" +
             $"For `add_curse`, only use these card ids: {supportedCurses}.\n" +
             "Do not use `CURSE_` prefixes in `card_id`.\n" +
+            "For `add_curse`, getting the `card_id` correct is more important than spelling the curse name perfectly; runtime text, localized curse name, and hover tips will be normalized from the id.\n" +
+            "If you are unsure about the exact localized curse name, keep the wording generic and let runtime fill the specific curse from `card_id`.\n" +
             "Output valid JSON only, with no markdown wrapper.\n" +
             "Output both `eng` and `zhs` localized text, and keep the two versions aligned.\n" +
             "Keep the event readable in-game and close to vanilla style.\n\n" +
@@ -724,6 +726,11 @@ public static class AiEventGenerationService
     {
         static bool HasAny(string text, params string[] needles) => needles.Any(text.Contains);
 
+        if (string.Equals(effect.Type, "add_curse", StringComparison.OrdinalIgnoreCase))
+        {
+            return AiEventEffectCatalog.TryNormalizeCurseCardId(effect.CardId, out _);
+        }
+
         return effect.Type switch
         {
             "gain_gold" or "lose_gold" => HasAny(engText, "gold", "coin") || HasAny(zhsText, "金币", "金钱", "钱"),
@@ -791,7 +798,7 @@ public static class AiEventGenerationService
         int? maxTokensOverride = null,
         CancellationToken cancellationToken = default)
     {
-        AiEventRuntimeConfig config = AiEventConfigService.Current;
+        AiEventRuntimeConfig config = AiEventConfigService.GetEffectiveConfig();
         using System.Net.Http.HttpClient client = new()
         {
             Timeout = TimeSpan.FromSeconds(timeoutSecondsOverride ?? Math.Max(15, config.RequestTimeoutSeconds)),

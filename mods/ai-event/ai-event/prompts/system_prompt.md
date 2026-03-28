@@ -37,6 +37,10 @@ Mechanical constraints:
   - `remove_cards` with `count`
   - `add_curse` with `card_id` and optional `count`
   - `obtain_random_relic` with optional `count`
+- For `add_curse`, the most important field is a legal `card_id`.
+- Do not invent, translate, or guess a specific curse name if you are unsure.
+- The runtime will backfill the exact localized curse name and hover tooltip from `card_id`.
+- If needed, write the surrounding button text generically, but keep the effect list correct.
 - Generate exactly the requested number of options.
 - Each option should have at least one real effect.
 - The button text must accurately describe the effect list.

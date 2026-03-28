@@ -19,6 +19,9 @@ public partial class AiEventCacheManagerOverlay : Control
     private VBoxContainer _entryRows = null!;
     private MegaRichTextLabel _runStatsLabel = null!;
     private Label _statusLabel = null!;
+    private Label _pageLabel = null!;
+    private Button _prevPageButton = null!;
+    private Button _nextPageButton = null!;
 
     private Control _editModal = null!;
     private Label _editTitleLabel = null!;
@@ -32,7 +35,9 @@ public partial class AiEventCacheManagerOverlay : Control
     private Label _busyLabel = null!;
     private bool _isBusy;
 
-    private readonly List<AiEventPoolEntry> _entries = new();
+    private const int PageSize = 40;
+    private readonly List<AiEventPoolEntrySummary> _entries = new();
+    private int _currentPage;
     private string? _editingEntryId;
     private NEventRoom? _previewRoom;
     private AiGeneratedEventPayload? _previewRestorePayload;
@@ -92,13 +97,14 @@ public partial class AiEventCacheManagerOverlay : Control
 
         root.AddChild(CreateHeaderRow());
 
-        _runStatsLabel = CreateRichText(string.Empty, 18);
-        _runStatsLabel.CustomMinimumSize = new Vector2(0f, 108f);
+        _runStatsLabel = CreateRichText(string.Empty, 15);
+        _runStatsLabel.CustomMinimumSize = new Vector2(0f, 74f);
         _runStatsLabel.Visible = false;
         root.AddChild(_runStatsLabel);
 
         root.AddChild(CreateToolbarRow());
         root.AddChild(CreateEntryList());
+        root.AddChild(CreatePaginationRow());
 
         _statusLabel = new Label
         {
@@ -169,6 +175,30 @@ public partial class AiEventCacheManagerOverlay : Control
         scroll.AddChild(_entryRows);
 
         return scroll;
+    }
+
+    private Control CreatePaginationRow()
+    {
+        HBoxContainer row = new();
+        row.Alignment = BoxContainer.AlignmentMode.Center;
+        row.AddThemeConstantOverride("separation", 10);
+
+        _prevPageButton = CreateActionButton("上一页", PrevPage, 120f);
+        row.AddChild(_prevPageButton);
+
+        _pageLabel = new Label
+        {
+            Text = "第 0 / 0 页",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            CustomMinimumSize = new Vector2(220f, 42f),
+        };
+        row.AddChild(_pageLabel);
+
+        _nextPageButton = CreateActionButton("下一页", NextPage, 120f);
+        row.AddChild(_nextPageButton);
+
+        return row;
     }
 
     private Control CreateEditModal()
@@ -357,14 +387,15 @@ public partial class AiEventCacheManagerOverlay : Control
 
         try
         {
-            List<AiEventPoolEntry> loadedEntries = await Task.Run(() =>
+            List<AiEventPoolEntrySummary> loadedEntries = await Task.Run(() =>
             {
                 AiEventRepository.Initialize();
-                return AiEventRepository.GetAllPoolEntries().ToList();
+                return AiEventRepository.GetAllPoolEntrySummaries().ToList();
             });
 
             _entries.Clear();
             _entries.AddRange(loadedEntries);
+            _currentPage = 0;
 
             RefreshRunStats();
             await RebuildEntryRowsAsync();
@@ -375,7 +406,7 @@ public partial class AiEventCacheManagerOverlay : Control
                 return;
             }
 
-            SetStatus($"已加载 {_entries.Count} 个缓存事件。");
+            SetStatus($"已加载 {_entries.Count} 个缓存事件，当前显示第 {GetDisplayPageNumber()} 页。");
         }
         finally
         {
@@ -385,8 +416,9 @@ public partial class AiEventCacheManagerOverlay : Control
 
     private void RefreshRunStats()
     {
-        AiEventRunStats stats = AiEventRuntimeService.GetRunStats();
-        if (!stats.HasActiveRun)
+        AiEventRunStatsSummary summary = AiEventRuntimeService.GetRunStatsSummary();
+        AiEventRunStats stats = summary.CurrentContextIsMultiplayer ? summary.Multiplayer : summary.Singleplayer;
+        if (!summary.Singleplayer.HasActiveRun && !summary.Multiplayer.HasActiveRun)
         {
             _runStatsLabel.Visible = false;
             _runStatsLabel.Text = string.Empty;
@@ -394,6 +426,8 @@ public partial class AiEventCacheManagerOverlay : Control
         }
 
         _runStatsLabel.Visible = true;
+        _runStatsLabel.Text = BuildRunStatsText(summary);
+        return;
         _runStatsLabel.Text =
             $"[b]当前进行中的存档[/b]  Seed: {EscapeBb(stats.Seed)}\n" +
             $"已经历 llm 事件数 [b]{stats.ExperiencedCount}[/b]    " +
@@ -403,12 +437,33 @@ public partial class AiEventCacheManagerOverlay : Control
             $"后台生成状态 [b]{(stats.IsGenerating ? "生成中" : "未生成中")}[/b]";
     }
 
+    private static string BuildRunStatsText(AiEventRunStatsSummary summary)
+    {
+        return
+            $"[b]当前进行中的存档[/b]  {(summary.CurrentContextIsMultiplayer ? "(当前在多人上下文)" : "(当前在单人/主菜单上下文)")}\n" +
+            $"{FormatRunStatsLine("单人", summary.Singleplayer)}\n" +
+            $"{FormatRunStatsLine("多人", summary.Multiplayer)}";
+    }
+
+    private static string FormatRunStatsLine(string label, AiEventRunStats stats)
+    {
+        if (!stats.HasActiveRun)
+        {
+            return $"[b]{label}[/b] 无进行中存档";
+        }
+
+        return $"[b]{label}[/b] 种子:{EscapeBb(stats.Seed)}  经历:[b]{stats.ExperiencedCount}[/b]  已生成:[b]{stats.GeneratedCount}[/b]  待生成:[b]{stats.PendingCount}[/b]  丢弃:[b]{stats.DiscardedCount}[/b]  状态:[b]{(stats.IsGenerating ? "生成中" : "未生成中")}[/b]";
+    }
+
     private async Task RebuildEntryRowsAsync()
     {
         foreach (Node child in _entryRows.GetChildren())
         {
             child.QueueFree();
         }
+
+        ClampCurrentPage();
+        RefreshPaginationUi();
 
         if (_entries.Count == 0)
         {
@@ -421,17 +476,20 @@ public partial class AiEventCacheManagerOverlay : Control
             return;
         }
 
-        for (int i = 0; i < _entries.Count; i++)
+        int startIndex = _currentPage * PageSize;
+        int endIndex = Math.Min(startIndex + PageSize, _entries.Count);
+
+        for (int i = startIndex; i < endIndex; i++)
         {
             _entryRows.AddChild(CreateEntryRow(_entries[i]));
-            if ((i + 1) % 20 == 0)
+            if (((i - startIndex) + 1) % 20 == 0)
             {
                 await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             }
         }
     }
 
-    private Control CreateEntryRow(AiEventPoolEntry entry)
+    private Control CreateEntryRow(AiEventPoolEntrySummary entry)
     {
         PanelContainer panel = new()
         {
@@ -496,6 +554,18 @@ public partial class AiEventCacheManagerOverlay : Control
         SetStatus("已创建新模板，编辑后点击保存即可写入缓存。");
     }
 
+    private void OpenEditModal(AiEventPoolEntrySummary entry)
+    {
+        AiEventPoolEntry? fullEntry = AiEventRepository.GetPoolEntryById(entry.EntryId);
+        if (fullEntry == null)
+        {
+            SetStatus("未找到要编辑的事件。");
+            return;
+        }
+
+        OpenEditModal(fullEntry);
+    }
+
     private void OpenEditModal(AiEventPoolEntry entry)
     {
         _editingEntryId = entry.EntryId;
@@ -538,6 +608,7 @@ public partial class AiEventCacheManagerOverlay : Control
         {
             await Task.Run(() => AiEventRepository.DeletePoolEntry(entryId));
             _entries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            ClampCurrentPage();
             RefreshRunStats();
             await RebuildEntryRowsAsync();
             SetStatus("已删除所选缓存事件。");
@@ -546,6 +617,23 @@ public partial class AiEventCacheManagerOverlay : Control
         {
             SetBusy(false);
         }
+    }
+
+    private async Task OpenPreviewAsync(AiEventPoolEntrySummary entry)
+    {
+        AiEventPoolEntry? fullEntry = await Task.Run(() =>
+        {
+            AiEventRepository.Initialize();
+            return AiEventRepository.GetPoolEntryById(entry.EntryId);
+        });
+
+        if (fullEntry == null)
+        {
+            SetStatus("未找到要预览的事件。");
+            return;
+        }
+
+        await OpenPreviewAsync(fullEntry);
     }
 
     private async Task OpenPreviewAsync(AiEventPoolEntry entry)
@@ -716,6 +804,16 @@ public partial class AiEventCacheManagerOverlay : Control
         return entry;
     }
 
+    private static string GetDisplayTitle(AiEventPoolEntrySummary entry)
+    {
+        bool useChinese = string.Equals(LocManager.Instance?.Language, "zhs", StringComparison.OrdinalIgnoreCase);
+        return FirstNonEmpty(
+            useChinese ? entry.ZhsTitle : entry.EngTitle,
+            useChinese ? entry.EngTitle : entry.ZhsTitle,
+            entry.EventKey,
+            entry.EntryId);
+    }
+
     private static string GetDisplayTitle(AiEventPoolEntry entry)
     {
         bool useChinese = string.Equals(LocManager.Instance?.Language, "zhs", StringComparison.OrdinalIgnoreCase);
@@ -724,6 +822,20 @@ public partial class AiEventCacheManagerOverlay : Control
             useChinese ? entry.Payload.Eng?.Title : entry.Payload.Zhs?.Title,
             entry.Payload.EventKey,
             entry.EntryId);
+    }
+
+    private static string BuildRowMeta(AiEventPoolEntrySummary entry)
+    {
+        string slotName = AiEventRegistry.GetActName(entry.Slot);
+        string source = FirstNonEmpty(entry.Source, "unknown");
+        string theme = FirstNonEmpty(entry.Theme, "未记录主题");
+        string time = entry.GeneratedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+        string summary = FirstNonEmpty(
+            entry.ZhsInitialDescription,
+            entry.EngInitialDescription,
+            "无描述");
+
+        return $"区域: {slotName}  |  来源: {source}  |  主题: {theme}  |  时间: {time}\n{summary}";
     }
 
     private static string BuildRowMeta(AiEventPoolEntry entry)
@@ -740,6 +852,11 @@ public partial class AiEventCacheManagerOverlay : Control
         return $"区域: {slotName}  |  来源: {source}  |  主题: {theme}  |  时间: {time}\n{summary}";
     }
 
+    private static string BuildTooltip(AiEventPoolEntrySummary entry)
+    {
+        return $"{GetDisplayTitle(entry)}\nSeed: {FirstNonEmpty(entry.Seed, "(empty)")}\nEntryId: {entry.EntryId}";
+    }
+
     private static string BuildTooltip(AiEventPoolEntry entry)
     {
         return $"{GetDisplayTitle(entry)}\nSeed: {FirstNonEmpty(entry.Seed, "(empty)")}\nEntryId: {entry.EntryId}";
@@ -752,6 +869,62 @@ public partial class AiEventCacheManagerOverlay : Control
         Visible = false;
     }
 
+    private void PrevPage()
+    {
+        if (_currentPage <= 0 || _isBusy)
+        {
+            return;
+        }
+
+        _currentPage--;
+        _ = RebuildEntryRowsAsync();
+        SetStatus($"已切换到第 {GetDisplayPageNumber()} 页。");
+    }
+
+    private void NextPage()
+    {
+        if (_isBusy)
+        {
+            return;
+        }
+
+        int lastPageIndex = Math.Max(0, GetTotalPages() - 1);
+        if (_currentPage >= lastPageIndex)
+        {
+            return;
+        }
+
+        _currentPage++;
+        _ = RebuildEntryRowsAsync();
+        SetStatus($"已切换到第 {GetDisplayPageNumber()} 页。");
+    }
+
+    private void ClampCurrentPage()
+    {
+        int totalPages = GetTotalPages();
+        _currentPage = totalPages <= 0 ? 0 : Math.Clamp(_currentPage, 0, totalPages - 1);
+    }
+
+    private void RefreshPaginationUi()
+    {
+        int totalPages = GetTotalPages();
+        int currentDisplayPage = totalPages == 0 ? 0 : _currentPage + 1;
+
+        _pageLabel.Text = $"第 {currentDisplayPage} / {totalPages} 页  每页 {PageSize} 条";
+        _prevPageButton.Disabled = _isBusy || _currentPage <= 0 || totalPages == 0;
+        _nextPageButton.Disabled = _isBusy || totalPages == 0 || _currentPage >= totalPages - 1;
+    }
+
+    private int GetTotalPages()
+    {
+        return _entries.Count == 0 ? 0 : (int)Math.Ceiling(_entries.Count / (double)PageSize);
+    }
+
+    private int GetDisplayPageNumber()
+    {
+        return GetTotalPages() == 0 ? 0 : _currentPage + 1;
+    }
+
     private void SetStatus(string text)
     {
         _statusLabel.Text = text;
@@ -762,6 +935,7 @@ public partial class AiEventCacheManagerOverlay : Control
         _isBusy = isBusy;
         _busyLabel.Text = text;
         _busyOverlay.Visible = isBusy;
+        RefreshPaginationUi();
         if (isBusy)
         {
             _busyOverlay.MoveToFront();

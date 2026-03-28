@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Threading.Tasks;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -17,6 +19,7 @@ public static class MultiplayerCardMultiplayerSync
 
     private static INetGameService? _netService;
     private static bool _registered;
+    private static int _broadcastGeneration;
 
     public static void InitializeForRun()
     {
@@ -49,6 +52,7 @@ public static class MultiplayerCardMultiplayerSync
     {
         lock (SyncRoot)
         {
+            _broadcastGeneration++;
             if (_registered && _netService != null)
             {
                 _netService.UnregisterMessageHandler<MultiplayerCardConfigMessage>(HandleConfigMessage);
@@ -69,11 +73,51 @@ public static class MultiplayerCardMultiplayerSync
             return;
         }
 
-        MultiplayerCardRuntimeConfig config = MultiplayerCardConfigService.Current;
+        int generation;
+        lock (SyncRoot)
+        {
+            generation = ++_broadcastGeneration;
+        }
+
+        BroadcastCurrentConfigInternal(netService);
+        TaskHelper.RunSafely(BroadcastCurrentConfigWithRetriesAsync(generation));
+    }
+
+    private static void BroadcastCurrentConfigInternal(INetGameService netService)
+    {
+        MultiplayerCardRuntimeConfig config = MultiplayerCardConfigService.GetEffectiveConfig();
         netService.SendMessage(new MultiplayerCardConfigMessage
         {
             configJson = JsonSerializer.Serialize(config, JsonOptions),
         });
+
+        MainFile.Logger.Info($"[MultiplayerCard] broadcast host config: mode={config.Mode}, appearance={config.AppearanceMode}, chance={config.HighProbabilityRewardChance:0.##}.");
+    }
+
+    private static async Task BroadcastCurrentConfigWithRetriesAsync(int generation)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            await Task.Delay(1000 + attempt * 750);
+
+            INetGameService? netService;
+            lock (SyncRoot)
+            {
+                if (generation != _broadcastGeneration)
+                {
+                    return;
+                }
+
+                netService = _netService ?? RunManager.Instance.NetService;
+            }
+
+            if (netService?.Type != NetGameType.Host)
+            {
+                return;
+            }
+
+            BroadcastCurrentConfigInternal(netService);
+        }
     }
 
     private static void HandleConfigMessage(MultiplayerCardConfigMessage message, ulong senderId)

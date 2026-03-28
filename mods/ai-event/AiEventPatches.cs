@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
@@ -10,11 +11,39 @@ using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using System.Reflection;
 
 namespace AiEvent;
 
 public static class AiEventPatches
 {
+    [HarmonyPatch]
+    private static class MultiplayerLobbyCtorPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            foreach (ConstructorInfo ctor in AccessTools.GetDeclaredConstructors(typeof(StartRunLobby)))
+            {
+                yield return ctor;
+            }
+
+            foreach (ConstructorInfo ctor in AccessTools.GetDeclaredConstructors(typeof(LoadRunLobby)))
+            {
+                yield return ctor;
+            }
+
+            foreach (ConstructorInfo ctor in AccessTools.GetDeclaredConstructors(typeof(RunLobby)))
+            {
+                yield return ctor;
+            }
+        }
+
+        private static void Postfix()
+        {
+            AiEventMultiplayerSync.InitializeForRun();
+        }
+    }
+
     [HarmonyPatch(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.BeginRun))]
     private static class CharacterSelectBeginRunPatch
     {
@@ -81,6 +110,7 @@ public static class AiEventPatches
         private static void Postfix()
         {
             AiEventMultiplayerSync.InitializeForRun();
+            AiEventMultiplayerSync.BroadcastConfig();
         }
     }
 

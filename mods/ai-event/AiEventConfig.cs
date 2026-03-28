@@ -4,6 +4,8 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BaseLib.Config;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace AiEvent;
 
@@ -59,6 +61,8 @@ public static class AiEventConfigService
     };
 
     public static AiEventRuntimeConfig Current { get; private set; } = new();
+
+    public static AiEventRuntimeConfig? SyncedFromHost { get; private set; }
 
     public static AiEventModConfig? UiConfig { get; private set; }
 
@@ -116,6 +120,23 @@ public static class AiEventConfigService
         Save();
     }
 
+    public static AiEventRuntimeConfig GetEffectiveConfig()
+    {
+        return RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null
+            ? CloneConfig(SyncedFromHost)
+            : CloneConfig(Current);
+    }
+
+    public static void ApplyHostConfig(AiEventRuntimeConfig config)
+    {
+        SyncedFromHost = CloneConfig(config);
+    }
+
+    public static void ClearHostConfig()
+    {
+        SyncedFromHost = null;
+    }
+
     public static string GetModDirectory()
     {
         string? location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
@@ -124,7 +145,7 @@ public static class AiEventConfigService
 
     public static AiEventMode GetMode()
     {
-        return ParseMode(Current.Mode);
+        return ParseMode(GetEffectiveConfig().Mode);
     }
 
     public static AiEventMode ParseMode(string? raw)
@@ -157,6 +178,26 @@ public static class AiEventConfigService
         };
         ModConfigRegistry.Register(MainFile.ModId, UiConfig);
         SaveFromUiConfig();
+    }
+
+    private static AiEventRuntimeConfig CloneConfig(AiEventRuntimeConfig config)
+    {
+        return new AiEventRuntimeConfig
+        {
+            Mode = config.Mode,
+            BaseUrl = config.BaseUrl,
+            ApiKey = config.ApiKey,
+            Model = config.Model,
+            Temperature = config.Temperature,
+            MaxOutputTokens = config.MaxOutputTokens,
+            RequestTimeoutSeconds = config.RequestTimeoutSeconds,
+            GenerateOnRunStart = config.GenerateOnRunStart,
+            CachePoolLimit = config.CachePoolLimit,
+            DynamicEventsPerRun = config.DynamicEventsPerRun,
+            VanillaWeight = config.VanillaWeight,
+            CacheWeight = config.CacheWeight,
+            DynamicWeight = config.DynamicWeight,
+        };
     }
 }
 

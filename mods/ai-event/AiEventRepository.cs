@@ -18,22 +18,28 @@ public static class AiEventRepository
 
     private static readonly object SyncRoot = new();
     private static bool _hasRewrittenReadableJson;
+    private static AiEventPoolDatabase? _poolDatabase;
 
     private static Dictionary<AiEventSlot, AiGeneratedEventPayload> _activePayloads = new();
-    private static List<AiEventPoolEntry> _poolEntries = new();
 
-    public static string ActiveCachePath => Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.generated.cache.json");
+    public static string ActiveCachePath => AiEventStorage.GetActiveCachePath();
 
-    public static string PoolPath => Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.event_pool.json");
+    public static string PoolPath => AiEventStorage.GetPoolPath();
 
-    public static string HistoryDirectoryPath => Path.Combine(AiEventConfigService.GetModDirectory(), "generated_history");
+    public static string PoolDatabasePath => AiEventStorage.GetPoolDatabasePath();
+
+    public static string HistoryDirectoryPath => AiEventStorage.GetHistoryDirectoryPath();
+
+    private static AiEventPoolDatabase PoolDatabase => _poolDatabase ??= new AiEventPoolDatabase(AiEventStorage.GetPoolDatabasePath());
 
     public static void Initialize()
     {
         lock (SyncRoot)
         {
+            AiEventStorage.MigrateLegacyFiles(AiEventConfigService.GetModDirectory());
+            PoolDatabase.EnsureInitialized();
+            MigrateLegacyPoolJsonToDatabase();
             LoadActiveCache();
-            LoadPool();
             PromoteInactiveDynamicEntriesToCacheInternal(GetActiveRunSeedFromSessionState());
             NormalizeActivePayloads();
             EnsureAllSlots();
@@ -107,13 +113,8 @@ public static class AiEventRepository
     {
         lock (SyncRoot)
         {
-            AiEventPoolEntry cloned = CloneEntry(entry);
-            _poolEntries.RemoveAll(existing => existing.EntryId == cloned.EntryId);
-            _poolEntries.Add(cloned);
-            _poolEntries = _poolEntries
-                .OrderByDescending(item => item.GeneratedAtUtc)
-                .ToList();
-            SavePoolInternal();
+            AiEventPoolEntry cloned = NormalizePoolEntry(CloneEntry(entry));
+            PoolDatabase.Upsert(cloned, SerializePayload(cloned.Payload));
         }
     }
 
@@ -121,11 +122,7 @@ public static class AiEventRepository
     {
         lock (SyncRoot)
         {
-            HashSet<AiEventSlot> slotSet = allowedSlots.ToHashSet();
-            return _poolEntries
-                .Where(entry => slotSet.Contains(entry.Payload.Slot))
-                .OrderByDescending(entry => entry.GeneratedAtUtc)
-                .Take(Math.Max(0, limit))
+            return PoolDatabase.QueryLatest(allowedSlots.ToHashSet(), Math.Max(0, limit), DeserializePayload)
                 .Select(CloneEntry)
                 .ToList();
         }
@@ -135,14 +132,7 @@ public static class AiEventRepository
     {
         lock (SyncRoot)
         {
-            IEnumerable<AiEventPoolEntry> query = _poolEntries.Where(entry => string.Equals(entry.Seed, seed, StringComparison.Ordinal));
-            if (!string.IsNullOrWhiteSpace(source))
-            {
-                query = query.Where(entry => string.Equals(entry.Source, source, StringComparison.OrdinalIgnoreCase));
-            }
-
-            return query
-                .OrderByDescending(entry => entry.GeneratedAtUtc)
+            return PoolDatabase.QueryBySeed(seed, string.IsNullOrWhiteSpace(source) ? null : source, DeserializePayload)
                 .Select(CloneEntry)
                 .ToList();
         }
@@ -156,8 +146,7 @@ public static class AiEventRepository
                 .Where(id => !string.IsNullOrWhiteSpace(id))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            return _poolEntries
-                .Where(entry => idSet.Contains(entry.EntryId))
+            return PoolDatabase.QueryByIds(idSet, DeserializePayload)
                 .Select(CloneEntry)
                 .ToList();
         }
@@ -167,10 +156,28 @@ public static class AiEventRepository
     {
         lock (SyncRoot)
         {
-            return _poolEntries
-                .OrderByDescending(entry => entry.GeneratedAtUtc)
+            return PoolDatabase.QueryAll(DeserializePayload)
                 .Select(CloneEntry)
                 .ToList();
+        }
+    }
+
+    public static IReadOnlyList<AiEventPoolEntrySummary> GetAllPoolEntrySummaries()
+    {
+        lock (SyncRoot)
+        {
+            return PoolDatabase.QueryAllSummaries()
+                .Select(CloneSummary)
+                .ToList();
+        }
+    }
+
+    public static AiEventPoolEntry? GetPoolEntryById(string entryId)
+    {
+        lock (SyncRoot)
+        {
+            AiEventPoolEntry? entry = PoolDatabase.QueryEntryById(entryId, DeserializePayload);
+            return entry == null ? null : CloneEntry(entry);
         }
     }
 
@@ -178,8 +185,7 @@ public static class AiEventRepository
     {
         lock (SyncRoot)
         {
-            _poolEntries.RemoveAll(entry => string.Equals(entry.EntryId, entryId, StringComparison.OrdinalIgnoreCase));
-            SavePoolInternal();
+            PoolDatabase.Delete(entryId);
         }
     }
 
@@ -192,80 +198,7 @@ public static class AiEventRepository
 
         lock (SyncRoot)
         {
-            if (_poolEntries.Count == 0 && File.Exists(PoolPath))
-            {
-                LoadPool();
-            }
-
-            int changed = 0;
-            foreach (AiEventPoolEntry entry in _poolEntries)
-            {
-                if (!string.Equals(entry.Seed, seed, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                entry.Source = "llm_cache";
-                changed++;
-            }
-
-            if (changed > 0)
-            {
-                SavePoolInternal();
-            }
-
-            return changed;
-        }
-    }
-
-    private static string? GetActiveRunSeedFromSessionState()
-    {
-        try
-        {
-            string sessionStatePath = Path.Combine(AiEventConfigService.GetModDirectory(), "ai-event.run_session.json");
-            if (!File.Exists(sessionStatePath))
-            {
-                return null;
-            }
-
-            JsonNode? node = JsonNode.Parse(File.ReadAllText(sessionStatePath));
-            string? seed = node?["Seed"]?.GetValue<string>();
-            return string.IsNullOrWhiteSpace(seed) ? null : seed;
-        }
-        catch (Exception ex)
-        {
-            MainFile.Logger.Error($"Failed to inspect ai-event run session state for stale dynamic cleanup: {ex}");
-            return null;
-        }
-    }
-
-    private static void PromoteInactiveDynamicEntriesToCacheInternal(string? activeSeed)
-    {
-        int changed = 0;
-        foreach (AiEventPoolEntry entry in _poolEntries)
-        {
-            if (!string.Equals(entry.Source, "llm_dynamic", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(activeSeed) && string.Equals(entry.Seed, activeSeed, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            entry.Source = "llm_cache";
-            changed++;
-        }
-
-        if (changed > 0)
-        {
-            SavePoolInternal();
+            return PoolDatabase.PromoteSeedDynamicEntriesToCache(seed);
         }
     }
 
@@ -276,13 +209,15 @@ public static class AiEventRepository
 
     public static AiEventPoolEntry DeserializePoolEntry(string json)
     {
-        return JsonSerializer.Deserialize<AiEventPoolEntry>(json, JsonOptions) ?? new AiEventPoolEntry();
+        AiEventPoolEntry entry = JsonSerializer.Deserialize<AiEventPoolEntry>(json, JsonOptions) ?? new AiEventPoolEntry();
+        return NormalizePoolEntry(entry);
     }
 
     public static void SaveHistorySnapshot(string? seed, string source, IEnumerable<AiGeneratedEventPayload> events)
     {
         try
         {
+            AiEventStorage.EnsureDataDirectories();
             Directory.CreateDirectory(HistoryDirectoryPath);
 
             AiEventGenerationSnapshot snapshot = new()
@@ -302,6 +237,39 @@ public static class AiEventRepository
         {
             MainFile.Logger.Error($"Failed to save ai-event generation history: {ex}");
         }
+    }
+
+    private static string? GetActiveRunSeedFromSessionState()
+    {
+        try
+        {
+            foreach (string sessionStatePath in AiEventStorage.GetAllSessionStatePaths())
+            {
+                if (!File.Exists(sessionStatePath))
+                {
+                    continue;
+                }
+
+                JsonNode? node = JsonNode.Parse(File.ReadAllText(sessionStatePath));
+                string? seed = node?["Seed"]?.GetValue<string>();
+                if (!string.IsNullOrWhiteSpace(seed))
+                {
+                    return seed;
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to inspect ai-event run session state for stale dynamic cleanup: {ex}");
+            return null;
+        }
+    }
+
+    private static void PromoteInactiveDynamicEntriesToCacheInternal(string? activeSeed)
+    {
+        PoolDatabase.PromoteInactiveDynamicEntriesToCache(activeSeed);
     }
 
     private static void LoadActiveCache()
@@ -325,26 +293,41 @@ public static class AiEventRepository
         }
     }
 
-    private static void LoadPool()
+    private static void MigrateLegacyPoolJsonToDatabase()
     {
         try
         {
-            if (!File.Exists(PoolPath))
+            if (PoolDatabase.HasAnyEntries())
             {
-                _poolEntries = BootstrapPoolFromHistory();
-                SavePoolInternal();
                 return;
             }
 
-            string json = File.ReadAllText(PoolPath);
-            List<AiEventPoolEntry>? entries = JsonSerializer.Deserialize<List<AiEventPoolEntry>>(json, JsonOptions);
-            _poolEntries = entries ?? new List<AiEventPoolEntry>();
-            NormalizePoolEntries();
+            if (File.Exists(PoolPath))
+            {
+                string json = File.ReadAllText(PoolPath);
+                List<AiEventPoolEntry>? entries = JsonSerializer.Deserialize<List<AiEventPoolEntry>>(json, JsonOptions);
+                List<AiEventPoolEntry> normalizedEntries = (entries ?? new List<AiEventPoolEntry>())
+                    .Select(NormalizePoolEntry)
+                    .OrderByDescending(entry => entry.GeneratedAtUtc)
+                    .GroupBy(entry => entry.EntryId)
+                    .Select(group => group.First())
+                    .ToList();
+
+                PoolDatabase.ReplaceAll(normalizedEntries, entry => SerializePayload(entry.Payload));
+                MainFile.Logger.Info($"[ai-event] migrated {normalizedEntries.Count} legacy pool entries into sqlite.");
+                return;
+            }
+
+            List<AiEventPoolEntry> historyEntries = BootstrapPoolFromHistory();
+            if (historyEntries.Count > 0)
+            {
+                PoolDatabase.ReplaceAll(historyEntries, entry => SerializePayload(entry.Payload));
+                MainFile.Logger.Info($"[ai-event] bootstrapped {historyEntries.Count} pool entries from history into sqlite.");
+            }
         }
         catch (Exception ex)
         {
-            MainFile.Logger.Error($"Failed to load ai-event pool: {ex}");
-            _poolEntries = new List<AiEventPoolEntry>();
+            MainFile.Logger.Error($"Failed to migrate ai-event pool to sqlite: {ex}");
         }
     }
 
@@ -371,7 +354,7 @@ public static class AiEventRepository
                 {
                     AiEventPoolEntry entry = CreatePoolEntry(payload, snapshot.Source, snapshot.Seed);
                     entry.GeneratedAtUtc = snapshot.GeneratedAtUtc;
-                    entries.Add(entry);
+                    entries.Add(NormalizePoolEntry(entry));
                 }
             }
         }
@@ -407,40 +390,30 @@ public static class AiEventRepository
         _activePayloads = normalized;
     }
 
-    private static void NormalizePoolEntries()
+    private static AiEventPoolEntry NormalizePoolEntry(AiEventPoolEntry entry)
     {
-        List<AiEventPoolEntry> normalized = new();
-        foreach (AiEventPoolEntry entry in _poolEntries)
+        if (entry.Payload == null)
         {
-            if (entry?.Payload == null)
-            {
-                continue;
-            }
-
-            AiEventSlot slot = entry.Payload.Slot;
-            AiGeneratedEventPayload fallback = AiEventFallbacks.Create(slot);
-            AiGeneratedEventPayload payload = NormalizePayload(entry.Payload, slot, fallback);
-            if (string.IsNullOrWhiteSpace(payload.EntryId))
-            {
-                payload.EntryId = string.IsNullOrWhiteSpace(entry.EntryId) ? Guid.NewGuid().ToString("N") : entry.EntryId;
-            }
-
-            normalized.Add(new AiEventPoolEntry
-            {
-                EntryId = string.IsNullOrWhiteSpace(entry.EntryId) ? payload.EntryId : entry.EntryId,
-                GeneratedAtUtc = entry.GeneratedAtUtc == default ? DateTime.UtcNow : entry.GeneratedAtUtc,
-                Source = string.IsNullOrWhiteSpace(entry.Source) ? "unknown" : entry.Source,
-                Seed = entry.Seed ?? string.Empty,
-                Theme = entry.Theme ?? string.Empty,
-                Payload = payload,
-            });
+            entry.Payload = AiEventFallbacks.Create(AiEventSlot.Shared);
         }
 
-        _poolEntries = normalized
-            .OrderByDescending(entry => entry.GeneratedAtUtc)
-            .GroupBy(entry => entry.EntryId)
-            .Select(group => group.First())
-            .ToList();
+        AiEventSlot slot = entry.Payload.Slot;
+        AiGeneratedEventPayload fallback = AiEventFallbacks.Create(slot);
+        AiGeneratedEventPayload payload = NormalizePayload(entry.Payload, slot, fallback);
+        if (string.IsNullOrWhiteSpace(payload.EntryId))
+        {
+            payload.EntryId = string.IsNullOrWhiteSpace(entry.EntryId) ? Guid.NewGuid().ToString("N") : entry.EntryId;
+        }
+
+        return new AiEventPoolEntry
+        {
+            EntryId = string.IsNullOrWhiteSpace(entry.EntryId) ? payload.EntryId : entry.EntryId,
+            GeneratedAtUtc = entry.GeneratedAtUtc == default ? DateTime.UtcNow : entry.GeneratedAtUtc,
+            Source = string.IsNullOrWhiteSpace(entry.Source) ? "unknown" : entry.Source,
+            Seed = entry.Seed ?? string.Empty,
+            Theme = entry.Theme ?? string.Empty,
+            Payload = payload,
+        };
     }
 
     private static AiGeneratedEventPayload NormalizePayload(AiGeneratedEventPayload payload, AiEventSlot slot, AiGeneratedEventPayload fallback)
@@ -470,12 +443,8 @@ public static class AiEventRepository
     private static void SaveActiveCacheInternal()
     {
         EnsureAllSlots();
+        AiEventStorage.EnsureDirectoryForFile(ActiveCachePath);
         File.WriteAllText(ActiveCachePath, JsonSerializer.Serialize(_activePayloads.Values.OrderBy(p => p.Slot), JsonOptions));
-    }
-
-    private static void SavePoolInternal()
-    {
-        File.WriteAllText(PoolPath, JsonSerializer.Serialize(_poolEntries.OrderByDescending(p => p.GeneratedAtUtc), JsonOptions));
     }
 
     private static void RewriteReadableJsonIfNeeded()
@@ -490,7 +459,6 @@ public static class AiEventRepository
         try
         {
             SaveActiveCacheInternal();
-            SavePoolInternal();
             RewriteHistorySnapshots();
         }
         catch (Exception ex)
@@ -526,6 +494,16 @@ public static class AiEventRepository
         }
     }
 
+    private static string SerializePayload(AiGeneratedEventPayload payload)
+    {
+        return JsonSerializer.Serialize(payload, JsonOptions);
+    }
+
+    private static AiGeneratedEventPayload DeserializePayload(string json)
+    {
+        return JsonSerializer.Deserialize<AiGeneratedEventPayload>(json, JsonOptions) ?? new AiGeneratedEventPayload();
+    }
+
     private static AiGeneratedEventPayload ClonePayload(AiGeneratedEventPayload payload)
     {
         string json = JsonSerializer.Serialize(payload, JsonOptions);
@@ -536,6 +514,12 @@ public static class AiEventRepository
     {
         string json = JsonSerializer.Serialize(entry, JsonOptions);
         return JsonSerializer.Deserialize<AiEventPoolEntry>(json, JsonOptions) ?? new AiEventPoolEntry();
+    }
+
+    private static AiEventPoolEntrySummary CloneSummary(AiEventPoolEntrySummary summary)
+    {
+        string json = JsonSerializer.Serialize(summary, JsonOptions);
+        return JsonSerializer.Deserialize<AiEventPoolEntrySummary>(json, JsonOptions) ?? new AiEventPoolEntrySummary();
     }
 }
 
