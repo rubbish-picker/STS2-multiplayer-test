@@ -189,6 +189,14 @@ public static class AiEventRepository
         }
     }
 
+    public static void ClearPoolEntries()
+    {
+        lock (SyncRoot)
+        {
+            PoolDatabase.Clear();
+        }
+    }
+
     public static int PromoteSeedDynamicEntriesToCache(string seed)
     {
         if (string.IsNullOrWhiteSpace(seed))

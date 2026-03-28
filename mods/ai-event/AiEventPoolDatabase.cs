@@ -139,6 +139,20 @@ public sealed class AiEventPoolDatabase
         SaveIndex();
     }
 
+    public void Clear()
+    {
+        EnsureInitialized();
+
+        if (Directory.Exists(_entriesDirectoryPath))
+        {
+            Directory.Delete(_entriesDirectoryPath, recursive: true);
+        }
+
+        Directory.CreateDirectory(_entriesDirectoryPath);
+        _indexEntries = new Dictionary<string, AiEventPoolIndexEntry>(StringComparer.OrdinalIgnoreCase);
+        SaveIndex();
+    }
+
     public int PromoteSeedDynamicEntriesToCache(string seed)
     {
         EnsureInitialized();

@@ -30,6 +30,7 @@ public partial class AiEventCacheManagerOverlay : Control
     private Control _previewModal = null!;
     private PanelContainer _previewHost = null!;
     private Button _previewCloseButton = null!;
+    private Control _confirmClearModal = null!;
 
     private Control _busyOverlay = null!;
     private Label _busyLabel = null!;
@@ -119,6 +120,9 @@ public partial class AiEventCacheManagerOverlay : Control
         _previewModal = CreatePreviewModal();
         AddChild(_previewModal);
 
+        _confirmClearModal = CreateConfirmClearModal();
+        AddChild(_confirmClearModal);
+
         _busyOverlay = CreateBusyOverlay();
         AddChild(_busyOverlay);
     }
@@ -144,6 +148,8 @@ public partial class AiEventCacheManagerOverlay : Control
 
         row.AddChild(CreateActionButton("刷新", () => _ = RefreshEntriesAsync()));
         row.AddChild(CreateActionButton("新建", CreateNewEntry));
+
+        row.AddChild(CreateActionButton("清空缓存", OpenClearConfirmModal, 140f));
 
         Label tip = new()
         {
@@ -340,6 +346,68 @@ public partial class AiEventCacheManagerOverlay : Control
         panel.AddChild(_busyLabel);
 
         return overlay;
+    }
+
+    private Control CreateConfirmClearModal()
+    {
+        Control modal = new()
+        {
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Stop,
+        };
+        modal.SetAnchorsPreset(LayoutPreset.FullRect);
+
+        ColorRect backdrop = new()
+        {
+            Color = new Color(0f, 0f, 0f, 0.82f),
+            MouseFilter = MouseFilterEnum.Stop,
+        };
+        backdrop.SetAnchorsPreset(LayoutPreset.FullRect);
+        modal.AddChild(backdrop);
+
+        PanelContainer panel = new()
+        {
+            CustomMinimumSize = new Vector2(560f, 220f),
+        };
+        panel.SetAnchorsPreset(LayoutPreset.Center);
+        panel.Position = new Vector2(-280f, -110f);
+        modal.AddChild(panel);
+
+        MarginContainer margin = new();
+        margin.AddThemeConstantOverride("margin_left", 20);
+        margin.AddThemeConstantOverride("margin_right", 20);
+        margin.AddThemeConstantOverride("margin_top", 20);
+        margin.AddThemeConstantOverride("margin_bottom", 20);
+        panel.AddChild(margin);
+
+        VBoxContainer root = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        root.AddThemeConstantOverride("separation", 14);
+        margin.AddChild(root);
+
+        root.AddChild(CreateRichText("[b]确定要清空全部 AI 事件缓存吗？[/b]", 24));
+
+        Label body = new()
+        {
+            Text = "这会删除当前缓存数据库里的所有 AI 事件。此操作不可撤销。",
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        root.AddChild(body);
+
+        HBoxContainer footer = new();
+        footer.Alignment = BoxContainer.AlignmentMode.End;
+        footer.AddThemeConstantOverride("separation", 8);
+        footer.AddChild(CreateActionButton("取消", CloseClearConfirmModal, 120f));
+        footer.AddChild(CreateActionButton("确定清空", () => _ = ConfirmClearPoolAsync(), 140f));
+        root.AddChild(footer);
+
+        return modal;
     }
 
     private Button CreateActionButton(string text, Action action, float minWidth = 110f)
@@ -619,6 +687,52 @@ public partial class AiEventCacheManagerOverlay : Control
         }
     }
 
+    private void OpenClearConfirmModal()
+    {
+        if (_isBusy)
+        {
+            return;
+        }
+
+        _confirmClearModal.Visible = true;
+        _confirmClearModal.MoveToFront();
+    }
+
+    private void CloseClearConfirmModal()
+    {
+        _confirmClearModal.Visible = false;
+    }
+
+    private async Task ConfirmClearPoolAsync()
+    {
+        if (_isBusy)
+        {
+            return;
+        }
+
+        CloseClearConfirmModal();
+        SetBusy(true, "正在清空 AI 事件缓存...");
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                AiEventRepository.Initialize();
+                AiEventRepository.ClearPoolEntries();
+            });
+
+            _entries.Clear();
+            _currentPage = 0;
+            RefreshRunStats();
+            await RebuildEntryRowsAsync();
+            SetStatus("已清空 AI 事件缓存数据库。");
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
     private async Task OpenPreviewAsync(AiEventPoolEntrySummary entry)
     {
         AiEventPoolEntry? fullEntry = await Task.Run(() =>
@@ -866,6 +980,7 @@ public partial class AiEventCacheManagerOverlay : Control
     {
         CloseEditModal();
         ClosePreviewModal();
+        CloseClearConfirmModal();
         Visible = false;
     }
 
