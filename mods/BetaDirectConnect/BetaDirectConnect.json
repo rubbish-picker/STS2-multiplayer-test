@@ -1,0 +1,11 @@
+{
+  "id": "BetaDirectConnect",
+  "name": "BetaDirectConnect",
+  "author": "Codex",
+  "description": "Adds direct IP and port based multiplayer hosting and joining for non-Steam beta players.",
+  "version": "v0.1.0",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": ["BaseLib"],
+  "affects_gameplay": false
+}
