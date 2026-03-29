@@ -8,6 +8,7 @@ public static class BetaDirectConnectUi
 {
     public const string JoinPanelName = "BetaDirectConnectJoinPanel";
     public const string HostPanelName = "BetaDirectConnectHostPanel";
+    public const string LoadPanelName = "BetaDirectConnectLoadPanel";
 
     public static void EnsureJoinPanel(NJoinFriendScreen screen)
     {
@@ -34,6 +35,18 @@ public static class BetaDirectConnectUi
         root.Owner = screen;
     }
 
+    public static void EnsureLoadPanel(NMultiplayerSubmenu screen)
+    {
+        if (screen.GetNodeOrNull<Control>(LoadPanelName) != null)
+        {
+            return;
+        }
+
+        Control root = BuildLoadPanel();
+        screen.AddChild(root);
+        root.Owner = screen;
+    }
+
     public static void ShowJoinPanelOnly(NJoinFriendScreen screen)
     {
         screen.GetNode<Control>("%ButtonContainer").Visible = false;
@@ -53,6 +66,23 @@ public static class BetaDirectConnectUi
     public static int GetConfiguredHostPort(NMultiplayerHostSubmenu screen)
     {
         if (screen.GetNodeOrNull<LineEdit>($"{HostPanelName}/Column/PortInput") is not LineEdit portInput)
+        {
+            return BetaDirectConnectConfigService.Current.HostPort;
+        }
+
+        if (!int.TryParse(portInput.Text.Trim(), out int port))
+        {
+            port = BetaDirectConnectConfigService.Current.HostPort;
+        }
+
+        port = BetaDirectConnectConfigService.NormalizePort(port);
+        portInput.Text = port.ToString();
+        return port;
+    }
+
+    public static int GetConfiguredLoadPort(NMultiplayerSubmenu screen)
+    {
+        if (screen.GetNodeOrNull<LineEdit>($"{LoadPanelName}/Column/PortInput") is not LineEdit portInput)
         {
             return BetaDirectConnectConfigService.Current.HostPort;
         }
@@ -176,6 +206,43 @@ public static class BetaDirectConnectUi
         column.AddChild(title);
         column.AddChild(desc);
         column.AddChild(CreateFieldBlock("Host Port / 房主端口", portInput));
+
+        return panel;
+    }
+
+    private static Control BuildLoadPanel()
+    {
+        PanelContainer panel = new()
+        {
+            Name = LoadPanelName,
+            CustomMinimumSize = new Vector2(760, 150),
+            Position = new Vector2(580, 820),
+            Size = new Vector2(760, 150),
+        };
+
+        VBoxContainer column = new()
+        {
+            Name = "Column",
+            AnchorsPreset = (int)Control.LayoutPreset.FullRect,
+            OffsetLeft = 24,
+            OffsetTop = 18,
+            OffsetRight = -24,
+            OffsetBottom = -18,
+        };
+        column.AddThemeConstantOverride("separation", 10);
+        panel.AddChild(column);
+
+        Label title = CreateLabel("Load Direct Connect / 读档直连开房", 24);
+        Label desc = CreateLabel(
+            "When reopening a saved multiplayer run, the host will bind this port before entering the load lobby.",
+            18);
+        desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        desc.Modulate = new Color(0.85f, 0.85f, 0.8f);
+        NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.HostPort.ToString(), "Host port / 房主端口");
+
+        column.AddChild(title);
+        column.AddChild(desc);
+        column.AddChild(CreateFieldBlock("Load Host Port / 读档房主端口", portInput));
 
         return panel;
     }

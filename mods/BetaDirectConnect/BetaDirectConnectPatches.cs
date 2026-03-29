@@ -4,7 +4,6 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer;
-using MegaCrit.Sts2.Core.Multiplayer.Connection;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
@@ -13,6 +12,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
+using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Platform.Steam;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -33,6 +33,9 @@ public static class BetaDirectConnectPatches
 
     private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuStack> MultiplayerStackRef =
         AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuStack>("_stack");
+
+    private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuButton> MultiplayerLoadButtonRef =
+        AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuButton>("_loadButton");
 
     [HarmonyPatch(typeof(NJoinFriendScreen), nameof(NJoinFriendScreen._Ready))]
     private static class JoinFriendReadyPatch
@@ -65,6 +68,15 @@ public static class BetaDirectConnectPatches
         private static void Postfix(NMultiplayerHostSubmenu __instance)
         {
             BetaDirectConnectUi.EnsureHostPanel(__instance);
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerSubmenu), nameof(NMultiplayerSubmenu._Ready))]
+    private static class MultiplayerReadyPatch
+    {
+        private static void Postfix(NMultiplayerSubmenu __instance)
+        {
+            BetaDirectConnectUi.EnsureLoadPanel(__instance);
         }
     }
 
@@ -127,6 +139,37 @@ public static class BetaDirectConnectPatches
             }
 
             TaskHelper.RunSafely(StartLoadedRunAsyncDirect(__instance, run));
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerSubmenu), "StartLoad")]
+    private static class StartLoadPatch
+    {
+        private static bool Prefix(NMultiplayerSubmenu __instance, NButton _)
+        {
+            if (!ShouldUseHostDirectConnect())
+            {
+                return true;
+            }
+
+            ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+            int port = BetaDirectConnectUi.GetConfiguredLoadPort(__instance);
+            BetaDirectConnectConfigService.UpdateHostPort(port);
+            MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localPlayerId={localPlayerId}, port={port}");
+
+            ReadSaveResult<SerializableRun> readSaveResult = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+            if (!readSaveResult.Success || readSaveResult.SaveData == null)
+            {
+                MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
+                MultiplayerLoadButtonRef(__instance).Disable();
+                ShowSimpleError(
+                    "Invalid Multiplayer Save / 多人存档无效",
+                    "The current multiplayer save does not match the local direct-connect player ID. If this was created under a different host identity, please re-host from a compatible save or start a new room. / 当前多人存档与本地直连玩家 ID 不匹配。如果这是在另一个房主身份下创建的，请使用匹配的存档重新开房，或新建房间。");
+                return false;
+            }
+
+            __instance.StartHost(readSaveResult.SaveData);
             return false;
         }
     }
