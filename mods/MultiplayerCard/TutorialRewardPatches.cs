@@ -16,11 +16,18 @@ public static class TutorialRewardPatches
 {
     private static readonly AccessTools.FieldRef<CardReward, List<CardCreationResult>> CardsRef =
         AccessTools.FieldRefAccess<CardReward, List<CardCreationResult>>("_cards");
+    private static readonly AccessTools.FieldRef<CardReward, bool> CardsWereManuallySetRef =
+        AccessTools.FieldRefAccess<CardReward, bool>("_cardsWereManuallySet");
 
     [HarmonyPatch(typeof(CardReward), nameof(CardReward.Populate))]
     [HarmonyPostfix]
     private static void InjectModCardsIntoManualEncounterRewards(CardReward __instance)
     {
+        if (!CardsWereManuallySetRef(__instance))
+        {
+            return;
+        }
+
         Player player = __instance.Player;
         CardCreationOptions? options = Traverse.Create(__instance).Property("Options").GetValue<CardCreationOptions>();
 
