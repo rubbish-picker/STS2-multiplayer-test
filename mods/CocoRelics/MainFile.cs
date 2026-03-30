@@ -16,5 +16,19 @@ public partial class MainFile : Node
         CocoRelicsConfigService.Initialize();
         Harmony harmony = new(ModId);
         harmony.PatchAll();
+        PatchWatcherCompatibility(harmony);
+    }
+
+    private static void PatchWatcherCompatibility(Harmony harmony)
+    {
+        var watcherPatchType = AccessTools.TypeByName("WatcherMod.WatcherRestSiteCharacterPatch");
+        var watcherPostfix = watcherPatchType == null ? null : AccessTools.Method(watcherPatchType, "Postfix");
+        if (watcherPostfix == null)
+        {
+            return;
+        }
+
+        var prefix = new HarmonyMethod(typeof(CocoRelicsPatches), nameof(CocoRelicsPatches.SkipWatcherRestSiteCharacterPatchDuringPreview));
+        harmony.Patch(watcherPostfix, prefix: prefix);
     }
 }

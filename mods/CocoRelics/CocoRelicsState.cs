@@ -1,11 +1,23 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Merchant;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Ascension;
+using MegaCrit.Sts2.Core.Factories;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Odds;
+using MegaCrit.Sts2.Core.Random;
+using MegaCrit.Sts2.Core.Rewards;
+using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -18,11 +30,28 @@ public sealed class ObservedRoomInfo
     public required RoomType RoomType { get; init; }
 
     public ModelId? ModelId { get; init; }
+
+    public MerchantInventory? ShopInventory { get; init; }
+
+    public ObservedTreasurePreview? TreasurePreview { get; init; }
+}
+
+public sealed class ObservedTreasurePreview
+{
+    public required int GoldAmount { get; init; }
+
+    public required List<ModelId> RelicIds { get; init; }
+
+    public required List<Reward> ExtraRewards { get; init; }
 }
 
 public static class CocoRelicsState
 {
     private static readonly Dictionary<ObservedRoomKey, ObservedRoomInfo> ObservedRooms = new();
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, RelicGrabBag>? SharedRelicGrabBagRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, RelicGrabBag>("_sharedGrabBag");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Rng>? TreasureRelicRngRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, Rng>("_rng");
     private static readonly Func<RunManager, RunState?>? StateGetter =
         AccessTools.PropertyGetter(typeof(RunManager), "State") is { } getter
             ? (Func<RunManager, RunState?>)Delegate.CreateDelegate(typeof(Func<RunManager, RunState?>), getter)
@@ -58,7 +87,7 @@ public static class CocoRelicsState
         return ObservedRooms.TryGetValue(new ObservedRoomKey(actIndex, coord), out info!);
     }
 
-    public static ObservedRoomInfo GetOrObserve(MapPoint point, RunState runState)
+    public static async Task<ObservedRoomInfo> GetOrObserveAsync(MapPoint point, RunState runState)
     {
         ObservedRoomKey key = new(runState.CurrentActIndex, point.coord);
         if (ObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
@@ -66,25 +95,70 @@ public static class CocoRelicsState
             return existing;
         }
 
-        ObservedRoomInfo observed = ObservePoint(point, runState);
+        ObservedRoomInfo observed = await ObservePointAsync(point, runState);
         ObservedRooms[key] = observed;
         return observed;
     }
 
-    private static ObservedRoomInfo ObservePoint(MapPoint point, RunState runState)
+    private static async Task<ObservedRoomInfo> ObservePointAsync(MapPoint point, RunState runState)
     {
-        RoomType roomType = ResolveRoomType(point, runState);
+        RunState observedRunState = CloneRunState(runState);
+        ObservedRoomInfo? lastObserved = null;
+        foreach (MapPoint simulatedPoint in GetPathFromCurrentPoint(observedRunState, point))
+        {
+            lastObserved = await ObserveSimulatedPointAsync(simulatedPoint, observedRunState, runState);
+        }
+
+        return lastObserved ?? new ObservedRoomInfo
+        {
+            RoomType = RoomType.Map,
+        };
+    }
+
+    private static async Task<ObservedRoomInfo> ObserveSimulatedPointAsync(MapPoint point, RunState observedRunState, RunState sourceRunState)
+    {
+        observedRunState.AddVisitedMapCoord(point.coord);
+        RoomType roomType = ResolveRoomType(point, observedRunState);
         ModelId? modelId = roomType switch
         {
-            RoomType.Monster or RoomType.Elite or RoomType.Boss => PickEncounterId(runState, point.coord, roomType),
-            RoomType.Event => PickEventId(runState, point.coord, point.PointType == MapPointType.Ancient),
+            RoomType.Monster or RoomType.Elite or RoomType.Boss => observedRunState.Act.PullNextEncounter(roomType).Id,
+            RoomType.Event => point.PointType == MapPointType.Ancient
+                ? observedRunState.Act.PullAncient().Id
+                : observedRunState.Act.PullNextEvent(observedRunState).Id,
             _ => null,
         };
+
+        observedRunState.AppendToMapPointHistory(point.PointType, roomType, modelId);
+        observedRunState.Act.MarkRoomVisited(roomType);
+
+        MerchantInventory? shopInventory = roomType == RoomType.Shop ? ObserveShop(sourceRunState) : null;
+        ObservedTreasurePreview? treasurePreview = roomType == RoomType.Treasure ? await ObserveTreasureAsync(sourceRunState) : null;
 
         return new ObservedRoomInfo
         {
             RoomType = roomType,
             ModelId = modelId,
+            ShopInventory = shopInventory,
+            TreasurePreview = treasurePreview,
+        };
+    }
+
+    private static MerchantInventory ObserveShop(RunState runState)
+    {
+        Player player = LocalContext.GetMe(runState) ?? runState.Players.First();
+        return MerchantInventory.CreateForNormalMerchant(player);
+    }
+
+    private static async Task<ObservedTreasurePreview> ObserveTreasureAsync(RunState runState)
+    {
+        Player player = LocalContext.GetMe(runState) ?? runState.Players.First();
+        TreasureRoom previewRoom = new(runState.CurrentActIndex);
+        List<Reward> extraRewards = await new RewardsSet(player).WithRewardsFromRoom(previewRoom).GenerateWithoutOffering();
+        return new ObservedTreasurePreview
+        {
+            GoldAmount = RollTreasureGoldAmount(player),
+            RelicIds = RollTreasureRelicIds(runState),
+            ExtraRewards = extraRewards,
         };
     }
 
@@ -99,100 +173,126 @@ public static class CocoRelicsState
             MapPointType.Shop => RoomType.Shop,
             MapPointType.RestSite => RoomType.RestSite,
             MapPointType.Ancient => RoomType.Event,
-            MapPointType.Unknown => PickUnknownRoomType(runState, point.coord),
+            MapPointType.Unknown => PickUnknownRoomType(runState),
             _ => RoomType.Map,
         };
     }
 
-    private static RoomType PickUnknownRoomType(RunState runState, MapCoord coord)
+    private static RoomType PickUnknownRoomType(RunState runState)
     {
-        UnknownMapPointOdds odds = runState.Odds.UnknownMapPoint;
-        List<(RoomType Type, float Weight)> candidates = new()
-        {
-            (RoomType.Event, Math.Max(0.01f, odds.EventOdds)),
-            (RoomType.Monster, Math.Max(0.01f, odds.MonsterOdds)),
-            (RoomType.Treasure, Math.Max(0.01f, odds.TreasureOdds)),
-            (RoomType.Shop, Math.Max(0.01f, odds.ShopOdds)),
-        };
+        HashSet<RoomType> blacklist = RunManager.BuildRoomTypeBlacklist(runState.CurrentMapPointHistoryEntry, runState.CurrentMapPoint?.Children ?? new HashSet<MapPoint>());
+        return runState.Odds.UnknownMapPoint.Roll(blacklist, runState);
+    }
 
-        if (odds.EliteOdds > 0f)
+    private static int RollTreasureGoldAmount(Player player)
+    {
+        Rng rewardsRng = new(player.PlayerRng.Rewards.Seed, player.PlayerRng.Rewards.Counter);
+        double goldAmount = rewardsRng.NextInt(42, 53);
+        if (AscensionHelper.HasAscension(AscensionLevel.Poverty))
         {
-            candidates.Add((RoomType.Elite, odds.EliteOdds));
+            goldAmount *= AscensionHelper.PovertyAscensionGoldMultiplier;
         }
 
-        float total = candidates.Sum(candidate => candidate.Weight);
-        if (total <= 0f)
+        return (int)goldAmount;
+    }
+
+    private static List<ModelId> RollTreasureRelicIds(RunState runState)
+    {
+        TreasureRoomRelicSynchronizer synchronizer = RunManager.Instance.TreasureRoomRelicSynchronizer;
+        if (SharedRelicGrabBagRef == null || TreasureRelicRngRef == null)
         {
-            return RoomType.Event;
+            return new List<ModelId>();
         }
 
-        float pick = NextUnitFloat(runState, coord, salt: 17) * total;
-        float cumulative = 0f;
-        foreach ((RoomType type, float weight) in candidates)
+        RelicGrabBag bagClone = RelicGrabBag.FromSerializable(SharedRelicGrabBagRef(synchronizer).ToSerializable());
+        Rng rngClone = new(TreasureRelicRngRef(synchronizer).Seed, TreasureRelicRngRef(synchronizer).Counter);
+        List<ModelId> relicIds = new();
+
+        foreach (Player player in runState.Players)
         {
-            cumulative += weight;
-            if (pick <= cumulative)
+            if (!Hook.ShouldGenerateTreasure(runState, player))
             {
-                return type;
+                continue;
+            }
+
+            RelicModel relic = TryGetTreasureTutorialRelic(runState, player, bagClone)
+                ?? bagClone.PullFromFront(RelicFactory.RollRarity(rngClone), runState)
+                ?? RelicFactory.FallbackRelic;
+            relicIds.Add(relic.Id);
+        }
+
+        return relicIds;
+    }
+
+    private static RelicModel? TryGetTreasureTutorialRelic(RunState runState, Player player, RelicGrabBag bagClone)
+    {
+        int priorTreasureCount = runState.MapPointHistory
+            .SelectMany(history => history)
+            .Count(entry => entry.HasRoomOfType(RoomType.Treasure));
+
+        if (player.UnlockState.NumberOfRuns == 0 && priorTreasureCount == 0)
+        {
+            bagClone.Remove<Gorget>();
+            return ModelDb.Relic<Gorget>();
+        }
+
+        return null;
+    }
+
+    private static RunState CloneRunState(RunState runState)
+    {
+        SerializableRun save = RunManager.Instance.ToSave(null);
+        return RunState.FromSerializable(save);
+    }
+
+    private static IReadOnlyList<MapPoint> GetPathFromCurrentPoint(RunState runState, MapPoint targetPoint)
+    {
+        MapPoint? currentPoint = runState.CurrentMapPoint ?? runState.Map.StartingMapPoint;
+        if (currentPoint == null || currentPoint.coord.Equals(targetPoint.coord))
+        {
+            return currentPoint == null ? new[] { targetPoint } : Array.Empty<MapPoint>();
+        }
+
+        HashSet<MapPoint> currentDescendants = GetDescendantsIncludingSelf(currentPoint);
+        List<MapPoint> reversedPath = new();
+        MapPoint? cursor = runState.Map.GetPoint(targetPoint.coord);
+        while (cursor != null && !cursor.coord.Equals(currentPoint.coord))
+        {
+            reversedPath.Add(cursor);
+            cursor = cursor.parents
+                .OrderByDescending(parent => parent.coord.row)
+                .FirstOrDefault(parent => parent.coord.row >= currentPoint.coord.row && currentDescendants.Contains(parent));
+        }
+
+        if (cursor == null)
+        {
+            return new[] { targetPoint };
+        }
+
+        reversedPath.Reverse();
+        return reversedPath;
+    }
+
+    private static HashSet<MapPoint> GetDescendantsIncludingSelf(MapPoint start)
+    {
+        HashSet<MapPoint> descendants = new();
+        Queue<MapPoint> queue = new();
+        queue.Enqueue(start);
+
+        while (queue.Count > 0)
+        {
+            MapPoint point = queue.Dequeue();
+            if (!descendants.Add(point))
+            {
+                continue;
+            }
+
+            foreach (MapPoint child in point.Children)
+            {
+                queue.Enqueue(child);
             }
         }
 
-        return candidates[^1].Type;
-    }
-
-    private static ModelId? PickEncounterId(RunState runState, MapCoord coord, RoomType roomType)
-    {
-        List<EncounterModel> candidates = runState.Act.AllEncounters
-            .Where(encounter => encounter.RoomType == roomType)
-            .DistinctBy(encounter => encounter.Id)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        int index = NextIndex(runState, coord, candidates.Count, salt: (int)roomType + 101);
-        return candidates[index].Id;
-    }
-
-    private static ModelId? PickEventId(RunState runState, MapCoord coord, bool forceAncient)
-    {
-        IEnumerable<EventModel> pool = forceAncient
-            ? runState.Act.AllAncients.Cast<EventModel>()
-            : runState.Act.AllEvents.Concat(ModelDb.AllSharedEvents);
-
-        List<EventModel> candidates = pool
-            .Where(model => forceAncient || model.IsAllowed(runState))
-            .DistinctBy(model => model.Id)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        int index = NextIndex(runState, coord, candidates.Count, salt: forceAncient ? 211 : 223);
-        return candidates[index].Id;
-    }
-
-    private static int NextIndex(RunState runState, MapCoord coord, int count, int salt)
-    {
-        if (count <= 1)
-        {
-            return 0;
-        }
-
-        return (int)(NextUInt(runState, coord, salt) % (uint)count);
-    }
-
-    private static float NextUnitFloat(RunState runState, MapCoord coord, int salt)
-    {
-        return NextUInt(runState, coord, salt) / (float)uint.MaxValue;
-    }
-
-    private static uint NextUInt(RunState runState, MapCoord coord, int salt)
-    {
-        return unchecked((uint)HashCode.Combine(runState.Rng.StringSeed, runState.CurrentActIndex, coord.col, coord.row, salt));
+        return descendants;
     }
 }

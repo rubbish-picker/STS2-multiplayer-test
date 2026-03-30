@@ -16,6 +16,9 @@ frontend/.env
 
 # Local machine paths (mod dev)
 local.props
+temp_mod_output/
+ModTheSpire/bin/
+ModTheSpire/obj/
 
 # sts2.dll 反编译输出（版权内容，不进 git；由用户运行 scripts/decompile_sts2.py 生成）
 sts2_decompiled/

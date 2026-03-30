@@ -9,9 +9,9 @@ public sealed class PreviewCombatVisuals : ICombatRoomVisuals
 {
     public required EncounterModel Encounter { get; init; }
 
+    public required IEnumerable<Creature> Allies { get; init; }
+
     public required IEnumerable<Creature> Enemies { get; init; }
 
     public required ActModel Act { get; init; }
-
-    public IEnumerable<Creature> Allies => new List<Creature>();
 }

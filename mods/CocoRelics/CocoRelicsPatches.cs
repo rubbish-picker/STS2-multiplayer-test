@@ -1,13 +1,23 @@
 using System;
+using System.Linq;
 using HarmonyLib;
 using Godot;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.Nodes.Events;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using MegaCrit.Sts2.Core.Random;
+using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 
 namespace CocoRelics;
 
@@ -15,6 +25,27 @@ namespace CocoRelics;
 public static class CocoRelicsPatches
 {
     private static MapCoord? _currentEnteringCoord;
+    private static bool _watcherRestSitePreviewCompatibilityActive;
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<RelicModel>?>? CurrentRelicsRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<RelicModel>?>("_currentRelics");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<int?>>? VotesRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<int?>>("_votes");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, int?>? PredictedVoteRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, int?>("_predictedVote");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Rng>? TreasureRelicRngRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, Rng>("_rng");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, IPlayerCollection>? PlayerCollectionRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, IPlayerCollection>("_playerCollection");
+
+    public static void SetWatcherRestSitePreviewCompatibility(bool active)
+    {
+        _watcherRestSitePreviewCompatibilityActive = active;
+    }
+
+    public static bool SkipWatcherRestSiteCharacterPatchDuringPreview()
+    {
+        return !_watcherRestSitePreviewCompatibilityActive;
+    }
 
     [HarmonyPatch(typeof(NMapScreen), "_Ready")]
     [HarmonyPostfix]
@@ -22,7 +53,7 @@ public static class CocoRelicsPatches
     {
         if (__instance.GetNodeOrNull<CocoPreviewOverlay>(nameof(CocoPreviewOverlay)) == null)
         {
-            __instance.AddChild(CocoPreviewOverlay.Create());
+            __instance.AddChild(CocoPreviewOverlay.Create(__instance.GetNodeOrNull<NBackButton>("Back")));
         }
     }
 
@@ -150,11 +181,196 @@ public static class CocoRelicsPatches
         };
     }
 
+    [HarmonyPatch(typeof(MerchantInventory), nameof(MerchantInventory.CreateForNormalMerchant))]
+    [HarmonyPrefix]
+    private static bool UseObservedShopInventory(Player player, ref MerchantInventory __result)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null || !_currentEnteringCoord.HasValue)
+        {
+            return true;
+        }
+
+        if (!CocoRelicsState.TryGet(_currentEnteringCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info) || info.ShopInventory == null)
+        {
+            return true;
+        }
+
+        __result = info.ShopInventory;
+        return false;
+    }
+
+    [HarmonyPatch(typeof(OneOffSynchronizer), "DoTreasureRoomRewards")]
+    [HarmonyPrefix]
+    private static bool UseObservedTreasureGold(Player player, ref System.Threading.Tasks.Task<int> __result)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null || runState.CurrentRoom?.RoomType != RoomType.Treasure || !runState.CurrentMapCoord.HasValue)
+        {
+            return true;
+        }
+
+        if (!CocoRelicsState.TryGet(runState.CurrentMapCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info) || info.TreasurePreview == null)
+        {
+            return true;
+        }
+
+        __result = ApplyObservedTreasureGoldAsync(player, info.TreasurePreview.GoldAmount);
+        return false;
+    }
+
+    [HarmonyPatch(typeof(TreasureRoomRelicSynchronizer), nameof(TreasureRoomRelicSynchronizer.BeginRelicPicking))]
+    [HarmonyPrefix]
+    private static bool UseObservedTreasureRelics(TreasureRoomRelicSynchronizer __instance)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null || !runState.CurrentMapCoord.HasValue || CurrentRelicsRef == null || VotesRef == null || PredictedVoteRef == null || PlayerCollectionRef == null || TreasureRelicRngRef == null)
+        {
+            return true;
+        }
+
+        if (!CocoRelicsState.TryGet(runState.CurrentMapCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info) || info.TreasurePreview == null)
+        {
+            return true;
+        }
+
+        var currentRelics = CurrentRelicsRef(__instance);
+        if (currentRelics != null)
+        {
+            return true;
+        }
+
+        var votes = VotesRef(__instance);
+        currentRelics = info.TreasurePreview.RelicIds.Select(ModelDb.GetById<RelicModel>).ToList();
+        votes.Clear();
+        PredictedVoteRef(__instance) = null;
+        foreach (Player _ in PlayerCollectionRef(__instance).Players)
+        {
+            votes.Add(null);
+        }
+
+        CurrentRelicsRef(__instance) = currentRelics;
+        if (currentRelics.Count == 0)
+        {
+            __instance.CompleteWithNoRelics();
+            return false;
+        }
+
+        if (RunManager.Instance.IsSinglePlayerOrFakeMultiplayer && PlayerCollectionRef(__instance).Players.Count > 1)
+        {
+            Player? localPlayer = LocalContext.GetMe(PlayerCollectionRef(__instance));
+            foreach (Player player in PlayerCollectionRef(__instance).Players)
+            {
+                if (!ReferenceEquals(player, localPlayer))
+                {
+                    votes[PlayerCollectionRef(__instance).GetPlayerSlotIndex(player)] = TreasureRelicRngRef(__instance).NextInt(currentRelics.Count);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.RewardsCmd), nameof(MegaCrit.Sts2.Core.Commands.RewardsCmd.OfferForRoomEnd))]
+    [HarmonyPrefix]
+    private static bool UseObservedTreasureExtraRewards(Player player, AbstractRoom room, ref System.Threading.Tasks.Task __result)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null || room.RoomType != RoomType.Treasure || !runState.CurrentMapCoord.HasValue)
+        {
+            return true;
+        }
+
+        if (!CocoRelicsState.TryGet(runState.CurrentMapCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info) || info.TreasurePreview == null)
+        {
+            return true;
+        }
+
+        __result = MegaCrit.Sts2.Core.Commands.RewardsCmd.OfferCustom(player, info.TreasurePreview.ExtraRewards);
+        return false;
+    }
+
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.GenerateMap))]
     [HarmonyPrefix]
     private static void ClearOnMapGeneration()
     {
         CocoRelicsState.Clear();
+    }
+
+    [HarmonyPatch(typeof(NCombatRoom), "UpdateCreatureNavigation")]
+    [HarmonyPrefix]
+    private static bool FixDetachedPreviewCombatNavigation(NCombatRoom __instance)
+    {
+        if (NCombatRoom.Instance == __instance)
+        {
+            return true;
+        }
+
+        var navigable = __instance.CreatureNodes
+            .Where(node => node.IsInteractable)
+            .OrderBy(node => node.GlobalPosition.X)
+            .ToList();
+
+        for (int index = 0; index < navigable.Count; index++)
+        {
+            NCreature current = navigable[index];
+            current.Hitbox.FocusNeighborLeft = (index > 0 ? navigable[index - 1].Hitbox : navigable[^1].Hitbox).GetPath();
+            current.Hitbox.FocusNeighborRight = (index < navigable.Count - 1 ? navigable[index + 1].Hitbox : navigable[0].Hitbox).GetPath();
+            current.Hitbox.FocusNeighborBottom = __instance.Ui.Hand.CardHolderContainer.GetPath();
+            current.Hitbox.FocusNeighborTop = current.Hitbox.GetPath();
+            current.UpdateNavigation();
+        }
+
+        __instance.Ui.Hand.CardHolderContainer.FocusNeighborTop = navigable.FirstOrDefault()?.Hitbox.GetPath();
+        return false;
+    }
+
+    [HarmonyPatch(typeof(NEventLayout), "InitializeVisuals")]
+    [HarmonyPrefix]
+    private static bool FixDetachedPreviewEventVisuals(NEventLayout __instance)
+    {
+        if (NEventRoom.Instance?.Layout == __instance)
+        {
+            return true;
+        }
+
+        EventModel? eventModel = AccessTools.Field(typeof(NEventLayout), "_event").GetValue(__instance) as EventModel;
+        if (eventModel == null)
+        {
+            return false;
+        }
+
+        __instance.SetPortrait(eventModel.CreateInitialPortrait());
+        if (eventModel.HasVfx)
+        {
+            Node2D vfx = eventModel.CreateVfx();
+            __instance.AddVfxAnchoredToPortrait(vfx);
+            vfx.Position = EventModel.VfxOffset;
+        }
+
+        return false;
+    }
+
+    [HarmonyPatch(typeof(NEventOptionButton), "EnableButton")]
+    [HarmonyPrefix]
+    private static bool PreventDetachedPreviewEventButtonsFromEnabling(NEventOptionButton __instance)
+    {
+        NEventRoom? ownerRoom = FindAncestor<NEventRoom>(__instance);
+        if (ownerRoom == null || ownerRoom == NEventRoom.Instance)
+        {
+            return true;
+        }
+
+        __instance.MouseFilter = Control.MouseFilterEnum.Ignore;
+        __instance.FocusMode = Control.FocusModeEnum.None;
+        return false;
+    }
+
+    [HarmonyPatch(typeof(NEventRoom), "OptionButtonClicked")]
+    [HarmonyPrefix]
+    private static bool BlockDetachedPreviewEventOptionClicks(NEventRoom __instance)
+    {
+        return __instance == NEventRoom.Instance;
     }
 
     [HarmonyPatch(typeof(RunManager), "InitializeNewRun")]
@@ -184,5 +400,27 @@ public static class CocoRelicsPatches
             player.AddRelicInternal(relic);
             MainFile.Logger.Info($"Granted debug relic {relic.Id} to player {player.NetId}.");
         }
+    }
+
+    private static TNode? FindAncestor<TNode>(Node? node) where TNode : Node
+    {
+        Node? current = node;
+        while (current != null)
+        {
+            if (current is TNode match)
+            {
+                return match;
+            }
+
+            current = current.GetParent();
+        }
+
+        return null;
+    }
+
+    private static async System.Threading.Tasks.Task<int> ApplyObservedTreasureGoldAsync(Player player, int goldAmount)
+    {
+        await MegaCrit.Sts2.Core.Commands.PlayerCmd.GainGold(goldAmount, player);
+        return goldAmount;
     }
 }
