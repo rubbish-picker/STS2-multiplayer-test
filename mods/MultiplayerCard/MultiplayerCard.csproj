@@ -74,7 +74,7 @@
         </Reference>
         <Reference Include="sts2">
             <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
-            <Private>false</Private>
+            <Private>true</Private>
             <Publicize>False</Publicize> <!--Allows private/protected field references but may cause errors.-->
         </Reference>
     </ItemGroup>
@@ -136,7 +136,26 @@
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
         <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
-        <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(ModsPath)$(MSBuildProjectName)/$(MSBuildProjectName).pck&quot;"
+        <ItemGroup>
+            <PublishedFiles Include="$(PublishDir)**\*.*" Exclude="$(PublishDir)**\*.pdb;$(PublishDir)**\*.xml;$(PublishDir)**\*.deps.json;$(PublishDir)**\*.runtimeconfig.json" />
+        </ItemGroup>
+        <Copy
+            SourceFiles="@(PublishedFiles)"
+            DestinationFiles="@(PublishedFiles->'$(ModsPath)$(MSBuildProjectName)\%(RecursiveDir)%(Filename)%(Extension)')"
+            SkipUnchangedFiles="true" />
+        <Copy
+            SourceFiles="$(Sts2DataDir)/sts2.dll"
+            DestinationFiles="$(MSBuildProjectDirectory)\.godot\mono\temp\bin\Debug\sts2.dll"
+            SkipUnchangedFiles="true" />
+        <Copy
+            SourceFiles="$(Sts2DataDir)/sts2.dll"
+            DestinationFiles="$(MSBuildProjectDirectory)\.godot\mono\temp\bin\Release\sts2.dll"
+            SkipUnchangedFiles="true" />
+        <Copy
+            SourceFiles="$(Sts2DataDir)/sts2.dll"
+            DestinationFiles="$(MSBuildProjectDirectory)\.godot\mono\temp\bin\ExportRelease\win-x64\sts2.dll"
+            SkipUnchangedFiles="true" />
+        <Exec Command="&quot;$(GodotPath)&quot; --headless --path &quot;$(MSBuildProjectDirectory)&quot; --export-pack &quot;BasicExport&quot; &quot;$(ModsPath)$(MSBuildProjectName)/$(MSBuildProjectName).pck&quot;"
               EnvironmentVariables="IsInnerGodotExport=true;MSBUILDDISABLENODEREUSE=1"
               ContinueOnError="WarnAndContinue"/>
     </Target>

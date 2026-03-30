@@ -39,8 +39,8 @@ public sealed class YouSoSelfish : CustomCardModel
     protected override IEnumerable<DynamicVar> CanonicalVars =>
         new DynamicVar[]
         {
-            new PowerVar<StrengthPower>(3),
-            new DynamicVar(TeammateHpLossKey, 3),
+            new PowerVar<StrengthPower>(2),
+            new DynamicVar(TeammateHpLossKey, 2),
             new MaxHpVar(TeammateMaxHpLossKey, 0)
         };
 
@@ -89,8 +89,8 @@ public sealed class YouSoSelfish : CustomCardModel
 
     protected override void OnUpgrade()
     {
-        base.DynamicVars.Strength.UpgradeValueBy(3m);
-        base.DynamicVars[TeammateMaxHpLossKey].UpgradeValueBy(2m);
+        base.DynamicVars.Strength.UpgradeValueBy(2m);
+        base.DynamicVars[TeammateMaxHpLossKey].UpgradeValueBy(1m);
     }
 
     private bool HasAliveTeammateTarget()

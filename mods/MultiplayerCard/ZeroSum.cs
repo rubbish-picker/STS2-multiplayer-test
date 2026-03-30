@@ -54,7 +54,7 @@ public sealed class ZeroSum : CustomCardModel
     public override string? CustomPortraitPath => PortraitPath;
 
     public ZeroSum()
-        : base(0, CardType.Skill, CardRarity.Rare, TargetType.AnyAlly)
+        : base(1, CardType.Skill, CardRarity.Rare, TargetType.AnyAlly)
     {
     }
 
