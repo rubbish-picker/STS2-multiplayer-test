@@ -23,10 +23,16 @@ public sealed class BorrowTeammateTime : CustomCardModel
 {
     private const string PortraitFileName = "borrow_teammate_time.png";
 
+    public override CardMultiplayerConstraint MultiplayerConstraint => MultiplayerCardConfigService.GetMode() switch
+    {
+        MultiplayerCardMode.UniversalMode => CardMultiplayerConstraint.None,
+        _ => CardMultiplayerConstraint.MultiplayerOnly,
+    };
+
     public override TargetType TargetType =>
-        HasAliveTeammateTarget()
-            ? base.TargetType
-            : TargetType.None;
+        MultiplayerCardConfigService.IsSingleplayerUniversalFallbackEnabled(base.Owner?.RunState) || !HasAliveTeammateTarget()
+            ? TargetType.None
+            : base.TargetType;
 
     protected override IEnumerable<DynamicVar> CanonicalVars =>
         new DynamicVar[]
@@ -53,15 +59,15 @@ public sealed class BorrowTeammateTime : CustomCardModel
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        ArgumentNullException.ThrowIfNull(cardPlay.Target, nameof(cardPlay.Target));
-        if (cardPlay.Target.Player == null || cardPlay.Target.Player == base.Owner)
+        await CreatureCmd.TriggerAnim(base.Owner.Creature, "Cast", base.Owner.Character.CastAnimDelay);
+        await PlayerCmd.GainEnergy(base.DynamicVars.Energy.IntValue, base.Owner);
+
+        if (cardPlay.Target?.Player == null || cardPlay.Target.Player == base.Owner)
         {
             return;
         }
 
-        await CreatureCmd.TriggerAnim(base.Owner.Creature, "Cast", base.Owner.Character.CastAnimDelay);
         await PowerCmd.Apply<DoomPower>(cardPlay.Target, base.DynamicVars.Doom.IntValue, base.Owner.Creature, this);
-        await PlayerCmd.GainEnergy(base.DynamicVars.Energy.IntValue, base.Owner);
     }
 
     protected override void OnUpgrade()
