@@ -203,7 +203,7 @@ internal sealed class MainForm : Form
             Margin = new Padding(18, 3, 3, 3),
             Text = "只保存",
         };
-        _saveButton.Click += (_, _) => SaveSelection(showMessage: true);
+        _saveButton.Click += (_, _) => SaveSelection(showMessage: false);
         actionBar.Controls.Add(_saveButton);
 
         _launchButton = new Button
