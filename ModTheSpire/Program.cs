@@ -1,0 +1,972 @@
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Windows.Forms;
+
+namespace ModTheSpire;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main()
+    {
+        ApplicationConfiguration.Initialize();
+        Application.Run(new MainForm());
+    }
+}
+
+internal sealed class MainForm : Form
+{
+    private readonly ComboBox _accountComboBox;
+    private readonly Label _settingsPathLabel;
+    private readonly Label _modsPathLabel;
+    private readonly ListView _modListView;
+    private readonly Button _refreshButton;
+    private readonly Button _updateModsButton;
+    private readonly Button _selectAllButton;
+    private readonly Button _selectNoneButton;
+    private readonly Button _saveButton;
+    private readonly Button _launchButton;
+    private readonly Button _saveAndLaunchButton;
+    private readonly CheckBox _useSteamCheckBox;
+    private readonly CheckBox _updateBeforeLaunchCheckBox;
+    private readonly Label _statusLabel;
+
+    private LauncherState _state = LauncherState.Empty;
+
+    public MainForm()
+    {
+        Text = "ModTheSpire";
+        StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(920, 640);
+        Size = new Size(1100, 760);
+
+        TableLayoutPanel root = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 5,
+            Padding = new Padding(12),
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Controls.Add(root);
+
+        FlowLayoutPanel topBar = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight,
+        };
+        root.Controls.Add(topBar, 0, 0);
+
+        topBar.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Margin = new Padding(0, 8, 8, 0),
+            Text = "账号目录",
+        });
+
+        _accountComboBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 260,
+        };
+        _accountComboBox.SelectedIndexChanged += (_, _) => OnAccountChanged();
+        topBar.Controls.Add(_accountComboBox);
+
+        _refreshButton = new Button
+        {
+            AutoSize = true,
+            Text = "刷新",
+        };
+        _refreshButton.Click += (_, _) => ReloadState();
+        topBar.Controls.Add(_refreshButton);
+
+        _updateModsButton = new Button
+        {
+            AutoSize = true,
+            Text = "更新 Mod",
+        };
+        _updateModsButton.Click += async (_, _) => await UpdateModsAsync(showPopupWhenFinished: true);
+        topBar.Controls.Add(_updateModsButton);
+
+        _useSteamCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Margin = new Padding(16, 8, 0, 0),
+            Text = "用 Steam 启动",
+        };
+        _useSteamCheckBox.Checked = false;
+        topBar.Controls.Add(_useSteamCheckBox);
+
+        _updateBeforeLaunchCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Margin = new Padding(12, 8, 0, 0),
+            Text = "启动前先更新 Mod",
+        };
+        _updateBeforeLaunchCheckBox.Checked = false;
+        topBar.Controls.Add(_updateBeforeLaunchCheckBox);
+
+        TableLayoutPanel infoPanel = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = new Padding(0, 10, 0, 10),
+        };
+        root.Controls.Add(infoPanel, 0, 1);
+
+        infoPanel.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Font = new Font(Font, FontStyle.Bold),
+            Text = "启动前选择要启用的 Mod。保存后下次启动立即生效。",
+        });
+
+        _settingsPathLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1040, 0),
+            Margin = new Padding(0, 6, 0, 0),
+        };
+        infoPanel.Controls.Add(_settingsPathLabel);
+
+        _modsPathLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1040, 0),
+            Margin = new Padding(0, 4, 0, 0),
+        };
+        infoPanel.Controls.Add(_modsPathLabel);
+
+        _modListView = new ListView
+        {
+            Dock = DockStyle.Fill,
+            CheckBoxes = true,
+            FullRowSelect = true,
+            View = View.Details,
+        };
+        _modListView.Columns.Add("启用", 70);
+        _modListView.Columns.Add("名称", 260);
+        _modListView.Columns.Add("ID", 220);
+        _modListView.Columns.Add("作者", 160);
+        _modListView.Columns.Add("位置", 360);
+        root.Controls.Add(_modListView, 0, 2);
+
+        FlowLayoutPanel actionBar = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 10, 0, 0),
+        };
+        root.Controls.Add(actionBar, 0, 3);
+
+        _selectAllButton = new Button
+        {
+            AutoSize = true,
+            Text = "全选",
+        };
+        _selectAllButton.Click += (_, _) => SetAllChecked(true);
+        actionBar.Controls.Add(_selectAllButton);
+
+        _selectNoneButton = new Button
+        {
+            AutoSize = true,
+            Text = "全不选",
+        };
+        _selectNoneButton.Click += (_, _) => SetAllChecked(false);
+        actionBar.Controls.Add(_selectNoneButton);
+
+        _saveButton = new Button
+        {
+            AutoSize = true,
+            Margin = new Padding(18, 3, 3, 3),
+            Text = "只保存",
+        };
+        _saveButton.Click += (_, _) => SaveSelection(showMessage: true);
+        actionBar.Controls.Add(_saveButton);
+
+        _launchButton = new Button
+        {
+            AutoSize = true,
+            Text = "直接启动游戏",
+        };
+        _launchButton.Click += async (_, _) => await LaunchWorkflowAsync(saveBeforeLaunch: false);
+        actionBar.Controls.Add(_launchButton);
+
+        _saveAndLaunchButton = new Button
+        {
+            AutoSize = true,
+            Font = new Font(Font, FontStyle.Bold),
+            Text = "保存并启动",
+        };
+        _saveAndLaunchButton.Click += (_, _) =>
+        {
+            _ = LaunchWorkflowAsync(saveBeforeLaunch: true);
+        };
+        actionBar.Controls.Add(_saveAndLaunchButton);
+
+        _statusLabel = new Label
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 10, 0, 0),
+        };
+        root.Controls.Add(_statusLabel, 0, 4);
+
+        ReloadState();
+    }
+
+    private void ReloadState()
+    {
+        try
+        {
+            _state = LauncherState.Load();
+            RebindAccounts();
+            RebindMods();
+            SetStatus($"已发现 {_state.AvailableMods.Count} 个本地 mod。");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"加载失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "ModTheSpire 加载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RebindAccounts()
+    {
+        string? previousPath = (_accountComboBox.SelectedItem as SettingsCandidate)?.SettingsPath;
+        _accountComboBox.BeginUpdate();
+        _accountComboBox.Items.Clear();
+        foreach (SettingsCandidate candidate in _state.SettingsCandidates)
+        {
+            _accountComboBox.Items.Add(candidate);
+        }
+
+        if (_accountComboBox.Items.Count == 0)
+        {
+            _accountComboBox.EndUpdate();
+            UpdatePathLabels();
+            return;
+        }
+
+        int index = 0;
+        if (!string.IsNullOrWhiteSpace(previousPath))
+        {
+            int found = _state.SettingsCandidates.FindIndex(item =>
+                string.Equals(item.SettingsPath, previousPath, StringComparison.OrdinalIgnoreCase));
+            if (found >= 0)
+            {
+                index = found;
+            }
+        }
+        else if (_state.SelectedCandidateIndex >= 0 && _state.SelectedCandidateIndex < _state.SettingsCandidates.Count)
+        {
+            index = _state.SelectedCandidateIndex;
+        }
+
+        _accountComboBox.SelectedIndex = index;
+        _accountComboBox.EndUpdate();
+    }
+
+    private void RebindMods()
+    {
+        _modListView.BeginUpdate();
+        _modListView.Items.Clear();
+        foreach (InstalledMod mod in _state.AvailableMods)
+        {
+            ListViewItem item = new("")
+            {
+                Checked = mod.IsEnabled,
+                Tag = mod,
+            };
+            item.SubItems.Add(mod.Name);
+            item.SubItems.Add(mod.Id);
+            item.SubItems.Add(mod.Author);
+            item.SubItems.Add(mod.ManifestPath);
+            _modListView.Items.Add(item);
+        }
+        _modListView.EndUpdate();
+        UpdatePathLabels();
+    }
+
+    private void OnAccountChanged()
+    {
+        if (_accountComboBox.SelectedItem is not SettingsCandidate candidate)
+        {
+            return;
+        }
+
+        _state = _state.WithSelectedCandidate(candidate.SettingsPath);
+        RebindMods();
+        SetStatus($"当前账号目录: {candidate.DisplayName}");
+    }
+
+    private void UpdatePathLabels()
+    {
+        _settingsPathLabel.Text = _state.SelectedCandidate is null
+            ? "设置文件: 未找到 settings.save"
+            : $"设置文件: {_state.SelectedCandidate.SettingsPath}";
+        _modsPathLabel.Text = $"游戏 mods 目录: {_state.ModsDirectory}";
+    }
+
+    private void SetAllChecked(bool isChecked)
+    {
+        foreach (ListViewItem item in _modListView.Items)
+        {
+            item.Checked = isChecked;
+        }
+    }
+
+    private bool SaveSelection(bool showMessage)
+    {
+        try
+        {
+            SettingsCandidate? selectedCandidate = _state.SelectedCandidate;
+            if (selectedCandidate is null)
+            {
+                throw new InvalidOperationException("没有可写入的 settings.save。");
+            }
+
+            JsonObject root = _state.LoadSelectedSettingsJson();
+            JsonObject modSettings = root["mod_settings"] as JsonObject ?? new JsonObject();
+            JsonArray modList = modSettings["mod_list"] as JsonArray ?? new JsonArray();
+
+            Dictionary<string, JsonObject> existingLocalEntries = new(StringComparer.OrdinalIgnoreCase);
+            foreach (JsonNode? node in modList)
+            {
+                if (node is not JsonObject modEntry)
+                {
+                    continue;
+                }
+
+                string? id = modEntry["id"]?.GetValue<string>();
+                string? source = modEntry["source"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(id) || !string.Equals(source, "mods_directory", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                existingLocalEntries[id] = modEntry;
+            }
+
+            foreach (InstalledMod mod in GetCurrentSelections())
+            {
+                if (!existingLocalEntries.TryGetValue(mod.Id, out JsonObject? entry))
+                {
+                    entry = new JsonObject();
+                    modList.Add(entry);
+                    existingLocalEntries[mod.Id] = entry;
+                }
+
+                entry["id"] = mod.Id;
+                entry["source"] = "mods_directory";
+                entry["is_enabled"] = mod.IsEnabled;
+            }
+
+            modSettings["mod_list"] = modList;
+            modSettings["mods_enabled"] = true;
+            root["mod_settings"] = modSettings;
+
+            string backupPath = $"{selectedCandidate.SettingsPath}.modthespire.bak";
+            File.Copy(selectedCandidate.SettingsPath, backupPath, overwrite: true);
+            File.WriteAllText(
+                selectedCandidate.SettingsPath,
+                root.ToJsonString(JsonOptions.Indented),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            _state = _state.WithUpdatedMods(GetCurrentSelections());
+            SetStatus($"已保存到 {selectedCandidate.SettingsPath}");
+            if (showMessage)
+            {
+                MessageBox.Show(this, "Mod 启用状态已保存。下次启动游戏时会按这里的选择加载。", "保存成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"保存失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    private List<InstalledMod> GetCurrentSelections()
+    {
+        List<InstalledMod> mods = new();
+        foreach (ListViewItem item in _modListView.Items)
+        {
+            if (item.Tag is InstalledMod mod)
+            {
+                mods.Add(mod with { IsEnabled = item.Checked });
+            }
+        }
+
+        return mods;
+    }
+
+    private async Task LaunchWorkflowAsync(bool saveBeforeLaunch)
+    {
+        try
+        {
+            SetBusyState(true);
+
+            if (saveBeforeLaunch && !SaveSelection(showMessage: false))
+            {
+                return;
+            }
+
+            if (_updateBeforeLaunchCheckBox.Checked)
+            {
+                bool updateSucceeded = await UpdateModsAsync(showPopupWhenFinished: false);
+                if (!updateSucceeded)
+                {
+                    return;
+                }
+            }
+
+            LaunchGame();
+        }
+        finally
+        {
+            SetBusyState(false);
+        }
+    }
+
+    private void LaunchGame()
+    {
+        try
+        {
+            if (!File.Exists(_state.GameExePath))
+            {
+                throw new FileNotFoundException("未找到 SlayTheSpire2.exe", _state.GameExePath);
+            }
+
+            List<string> args = new();
+            if (!_useSteamCheckBox.Checked)
+            {
+                args.Add("--force-steam");
+                args.Add("off");
+            }
+
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = _state.GameExePath,
+                WorkingDirectory = Path.GetDirectoryName(_state.GameExePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = true,
+                Arguments = string.Join(" ", args.Select(QuoteArgument)),
+            };
+
+            Process.Start(startInfo);
+            SetStatus($"已启动游戏: {_state.GameExePath}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"启动失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task<bool> UpdateModsAsync(bool showPopupWhenFinished)
+    {
+        try
+        {
+            SetBusyState(true);
+            SetStatus("正在更新 Mod...");
+
+            UpdateModsResult result = await Task.Run(() => GitModUpdater.Run(_state.GameDirectory, _state.RemoteUrl));
+
+            if (result.Success)
+            {
+                SetStatus("Mod 更新完成。");
+                ReloadState();
+                if (showPopupWhenFinished)
+                {
+                    MessageBox.Show(this, result.Message, "更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                return true;
+            }
+
+            SetStatus($"更新失败: {result.Message}", isError: true);
+            MessageBox.Show(this, result.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"更新失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+        finally
+        {
+            SetBusyState(false);
+        }
+    }
+
+    private void SetBusyState(bool isBusy)
+    {
+        UseWaitCursor = isBusy;
+        _refreshButton.Enabled = !isBusy;
+        _updateModsButton.Enabled = !isBusy;
+        _selectAllButton.Enabled = !isBusy;
+        _selectNoneButton.Enabled = !isBusy;
+        _saveButton.Enabled = !isBusy;
+        _launchButton.Enabled = !isBusy;
+        _saveAndLaunchButton.Enabled = !isBusy;
+        _accountComboBox.Enabled = !isBusy;
+        _useSteamCheckBox.Enabled = !isBusy;
+        _updateBeforeLaunchCheckBox.Enabled = !isBusy;
+        _modListView.Enabled = !isBusy;
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        return value.Contains(' ') ? $"\"{value}\"" : value;
+    }
+
+    private void SetStatus(string message, bool isError = false)
+    {
+        _statusLabel.Text = message;
+        _statusLabel.ForeColor = isError ? Color.Firebrick : SystemColors.ControlText;
+    }
+}
+
+internal sealed record LauncherState(
+    string GameDirectory,
+    string GameExePath,
+    string ModsDirectory,
+    string RemoteUrl,
+    List<SettingsCandidate> SettingsCandidates,
+    int SelectedCandidateIndex,
+    List<InstalledMod> AvailableMods)
+{
+    public static LauncherState Empty => new(
+        GameDirectory: "",
+        GameExePath: "",
+        ModsDirectory: "",
+        RemoteUrl: "",
+        SettingsCandidates: new List<SettingsCandidate>(),
+        SelectedCandidateIndex: -1,
+        AvailableMods: new List<InstalledMod>());
+
+    public SettingsCandidate? SelectedCandidate =>
+        SelectedCandidateIndex >= 0 && SelectedCandidateIndex < SettingsCandidates.Count
+            ? SettingsCandidates[SelectedCandidateIndex]
+            : null;
+
+    public static LauncherState Load()
+    {
+        LauncherConfig config = LauncherConfig.Load();
+        string gameDir = config.Sts2Path;
+        string gameExe = Path.Combine(gameDir, "SlayTheSpire2.exe");
+        string modsDir = Path.Combine(gameDir, "mods");
+
+        List<SettingsCandidate> candidates = SettingsCandidate.Discover();
+        int selectedIndex = SettingsCandidate.PickDefaultIndex(candidates);
+        SettingsCandidate? selectedCandidate = selectedIndex >= 0 && selectedIndex < candidates.Count ? candidates[selectedIndex] : null;
+        List<InstalledMod> mods = InstalledMod.Discover(modsDir, selectedCandidate);
+
+        return new LauncherState(gameDir, gameExe, modsDir, config.ModUpdateRemoteUrl, candidates, selectedIndex, mods);
+    }
+
+    public LauncherState WithSelectedCandidate(string settingsPath)
+    {
+        int selectedIndex = SettingsCandidates.FindIndex(item =>
+            string.Equals(item.SettingsPath, settingsPath, StringComparison.OrdinalIgnoreCase));
+        SettingsCandidate? selectedCandidate = selectedIndex >= 0 && selectedIndex < SettingsCandidates.Count ? SettingsCandidates[selectedIndex] : null;
+        List<InstalledMod> mods = InstalledMod.Discover(ModsDirectory, selectedCandidate);
+        return this with
+        {
+            SelectedCandidateIndex = selectedIndex,
+            AvailableMods = mods,
+        };
+    }
+
+    public LauncherState WithUpdatedMods(List<InstalledMod> mods)
+    {
+        return this with
+        {
+            AvailableMods = mods,
+        };
+    }
+
+    public JsonObject LoadSelectedSettingsJson()
+    {
+        if (SelectedCandidate is null)
+        {
+            throw new InvalidOperationException("No selected settings file.");
+        }
+
+        string json = File.ReadAllText(SelectedCandidate.SettingsPath, Encoding.UTF8);
+        JsonNode? node = JsonNode.Parse(json);
+        if (node is not JsonObject root)
+        {
+            throw new InvalidDataException("settings.save is not a valid JSON object.");
+        }
+
+        return root;
+    }
+}
+
+internal sealed record InstalledMod(
+    string Id,
+    string Name,
+    string Author,
+    string ManifestPath,
+    bool IsEnabled)
+{
+    public static List<InstalledMod> Discover(string modsDirectory, SettingsCandidate? candidate)
+    {
+        Dictionary<string, bool> enabledMap = candidate?.LoadEnabledMap() ?? new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        List<InstalledMod> mods = new();
+        HashSet<string> seenIds = new(StringComparer.OrdinalIgnoreCase);
+
+        if (!Directory.Exists(modsDirectory))
+        {
+            return mods;
+        }
+
+        foreach (string modDir in Directory.EnumerateDirectories(modsDirectory))
+        {
+            try
+            {
+                string modFolderName = Path.GetFileName(modDir);
+                string manifestPath = Path.Combine(modDir, $"{modFolderName}.json");
+                if (!File.Exists(manifestPath))
+                {
+                    continue;
+                }
+
+                using FileStream stream = File.OpenRead(manifestPath);
+                JsonNode? node = JsonNode.Parse(stream);
+                if (node is not JsonObject manifest)
+                {
+                    continue;
+                }
+
+                string? id = manifest["id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(id) || !seenIds.Add(id))
+                {
+                    continue;
+                }
+
+                string name = manifest["name"]?.GetValue<string>() ?? id;
+                string author = manifest["author"]?.GetValue<string>() ?? "";
+                bool isEnabled = enabledMap.TryGetValue(id, out bool value) ? value : true;
+                mods.Add(new InstalledMod(id, name, author, manifestPath, isEnabled));
+            }
+            catch
+            {
+            }
+        }
+
+        return mods
+            .OrderByDescending(mod => string.Equals(mod.Id, "BaseLib", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+}
+
+internal sealed record SettingsCandidate(
+    string PlatformName,
+    string UserId,
+    string SettingsPath,
+    DateTime LastWriteTimeUtc)
+{
+    public string DisplayName => $"{PlatformName}/{UserId}";
+
+    public override string ToString() => $"{DisplayName}  ({LastWriteTimeUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss})";
+
+    public Dictionary<string, bool> LoadEnabledMap()
+    {
+        string json = File.ReadAllText(SettingsPath, Encoding.UTF8);
+        JsonNode? node = JsonNode.Parse(json);
+        Dictionary<string, bool> map = new(StringComparer.OrdinalIgnoreCase);
+        JsonArray? modList = node?["mod_settings"]?["mod_list"] as JsonArray;
+        if (modList == null)
+        {
+            return map;
+        }
+
+        foreach (JsonNode? entryNode in modList)
+        {
+            if (entryNode is not JsonObject entry)
+            {
+                continue;
+            }
+
+            string? id = entry["id"]?.GetValue<string>();
+            string? source = entry["source"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(id) || !string.Equals(source, "mods_directory", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            map[id] = entry["is_enabled"]?.GetValue<bool>() ?? true;
+        }
+
+        return map;
+    }
+
+    public static List<SettingsCandidate> Discover()
+    {
+        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SlayTheSpire2");
+        List<SettingsCandidate> candidates = new();
+        foreach (string platformName in new[] { "default", "steam", "editor" })
+        {
+            string platformDir = Path.Combine(root, platformName);
+            if (!Directory.Exists(platformDir))
+            {
+                continue;
+            }
+
+            foreach (string userDir in Directory.EnumerateDirectories(platformDir))
+            {
+                string settingsPath = Path.Combine(userDir, "settings.save");
+                if (!File.Exists(settingsPath))
+                {
+                    continue;
+                }
+
+                DirectoryInfo info = new(userDir);
+                candidates.Add(new SettingsCandidate(
+                    platformName,
+                    info.Name,
+                    settingsPath,
+                    File.GetLastWriteTimeUtc(settingsPath)));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(item => item.LastWriteTimeUtc)
+            .ToList();
+    }
+
+    public static int PickDefaultIndex(List<SettingsCandidate> candidates)
+    {
+        if (candidates.Count == 0)
+        {
+            return -1;
+        }
+
+        int steamIndex = candidates.FindIndex(item => string.Equals(item.PlatformName, "steam", StringComparison.OrdinalIgnoreCase));
+        if (steamIndex >= 0)
+        {
+            return steamIndex;
+        }
+
+        return 0;
+    }
+}
+
+internal sealed class LauncherConfig
+{
+    public string Sts2Path { get; init; } = "";
+
+    public string ModUpdateRemoteUrl { get; init; } =
+        "https://github.com/rubbish-picker/Xk92Zm5zS29sTGFrZVN0cmluZ1Rva2VuMTIz-briu.git";
+
+    public static LauncherConfig Load()
+    {
+        string repoConfigPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "config.json");
+        repoConfigPath = Path.GetFullPath(repoConfigPath);
+        if (File.Exists(repoConfigPath))
+        {
+            string json = File.ReadAllText(repoConfigPath, Encoding.UTF8);
+            JsonNode? node = JsonNode.Parse(json);
+            string? sts2Path = node?["sts2_path"]?.GetValue<string>();
+            string? remoteUrl = node?["mod_update_remote_url"]?.GetValue<string>();
+            if (!string.IsNullOrWhiteSpace(sts2Path))
+            {
+                return new LauncherConfig
+                {
+                    Sts2Path = sts2Path,
+                    ModUpdateRemoteUrl = string.IsNullOrWhiteSpace(remoteUrl)
+                        ? "https://github.com/rubbish-picker/Xk92Zm5zS29sTGFrZVN0cmluZ1Rva2VuMTIz-briu.git"
+                        : remoteUrl,
+                };
+            }
+        }
+
+        string fallback = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            "Steam",
+            "steamapps",
+            "common",
+            "Slay the Spire 2");
+        return new LauncherConfig { Sts2Path = fallback };
+    }
+}
+
+internal static class GitModUpdater
+{
+    public static UpdateModsResult Run(string gameDirectory, string remoteUrl)
+    {
+        if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
+        {
+            return UpdateModsResult.Fail($"游戏目录不存在: {gameDirectory}");
+        }
+
+        if (!ToolExists("git"))
+        {
+            return UpdateModsResult.Fail("未在 PATH 中找到 git，无法执行更新。");
+        }
+
+        StringBuilder log = new();
+        bool hasGitDirectory = Directory.Exists(Path.Combine(gameDirectory, ".git"));
+        if (!hasGitDirectory)
+        {
+            RunGit(gameDirectory, log, "init");
+        }
+
+        string currentRemote = TryGetGitOutput(gameDirectory, "remote", "get-url", "origin");
+        if (string.IsNullOrWhiteSpace(currentRemote))
+        {
+            RunGit(gameDirectory, log, "remote", "add", "origin", remoteUrl);
+        }
+        else if (!string.Equals(currentRemote.Trim(), remoteUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            RunGit(gameDirectory, log, "remote", "set-url", "origin", remoteUrl);
+        }
+
+        RunGit(gameDirectory, log, "fetch", "origin", "--prune");
+
+        bool resetMain = TryRunGit(gameDirectory, log, "reset", "--hard", "origin/main");
+        if (!resetMain)
+        {
+            bool resetMaster = TryRunGit(gameDirectory, log, "reset", "--hard", "origin/master");
+            if (!resetMaster)
+            {
+                return UpdateModsResult.Fail("无法重置到 origin/main 或 origin/master。\n\n" + log);
+            }
+        }
+
+        return UpdateModsResult.Ok("Mod 更新完成。\n\n" + log);
+    }
+
+    private static bool ToolExists(string toolName)
+    {
+        try
+        {
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = toolName,
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using Process? process = Process.Start(startInfo);
+            process?.WaitForExit();
+            return process?.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryRunGit(string workdir, StringBuilder log, params string[] args)
+    {
+        try
+        {
+            RunGit(workdir, log, args);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void RunGit(string workdir, StringBuilder log, params string[] args)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "git",
+            WorkingDirectory = workdir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        foreach (string arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using Process process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("无法启动 git 进程。");
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        log.AppendLine($"> git {string.Join(" ", args)}");
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            log.AppendLine(stdout.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            log.AppendLine(stderr.Trim());
+        }
+        log.AppendLine();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(" ", args)} 执行失败，退出码 {process.ExitCode}。");
+        }
+    }
+
+    private static string TryGetGitOutput(string workdir, params string[] args)
+    {
+        try
+        {
+            StringBuilder log = new();
+            RunGit(workdir, log, args);
+            string text = log.ToString();
+            string marker = Environment.NewLine;
+            int index = text.IndexOf(marker, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return string.Empty;
+            }
+
+            string remainder = text[(index + marker.Length)..].Trim();
+            string[] lines = remainder.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+            return lines.FirstOrDefault() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+}
+
+internal sealed record UpdateModsResult(bool Success, string Message)
+{
+    public static UpdateModsResult Ok(string message) => new(true, message);
+
+    public static UpdateModsResult Fail(string message) => new(false, message);
+}
+
+internal static class JsonOptions
+{
+    public static JsonSerializerOptions Indented { get; } = new()
+    {
+        WriteIndented = true,
+    };
+}
