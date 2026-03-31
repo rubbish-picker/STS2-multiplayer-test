@@ -24,6 +24,7 @@ internal sealed class MainForm : Form
     private readonly ListView _modListView;
     private readonly Button _refreshButton;
     private readonly Button _updateModsButton;
+    private readonly Button _pushRemoteButton;
     private readonly Button _selectAllButton;
     private readonly Button _selectNoneButton;
     private readonly Button _saveButton;
@@ -32,11 +33,13 @@ internal sealed class MainForm : Form
     private readonly CheckBox _useSteamCheckBox;
     private readonly CheckBox _updateBeforeLaunchCheckBox;
     private readonly Label _statusLabel;
+    private readonly bool _canPushRemote;
 
     private LauncherState _state = LauncherState.Empty;
 
     public MainForm()
     {
+        _canPushRemote = string.Equals(Environment.UserName, "27940", StringComparison.OrdinalIgnoreCase);
         Text = "ModTheSpire";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(920, 640);
@@ -96,6 +99,15 @@ internal sealed class MainForm : Form
         };
         _updateModsButton.Click += async (_, _) => await UpdateModsAsync(showPopupWhenFinished: true);
         topBar.Controls.Add(_updateModsButton);
+
+        _pushRemoteButton = new Button
+        {
+            AutoSize = true,
+            Text = "推送到远程",
+            Enabled = _canPushRemote,
+        };
+        _pushRemoteButton.Click += async (_, _) => await PushRemoteAsync();
+        topBar.Controls.Add(_pushRemoteButton);
 
         _useSteamCheckBox = new CheckBox
         {
@@ -527,6 +539,7 @@ internal sealed class MainForm : Form
         _useSteamCheckBox.Enabled = !isBusy;
         _updateBeforeLaunchCheckBox.Enabled = !isBusy;
         _modListView.Enabled = !isBusy;
+        _pushRemoteButton.Enabled = !isBusy && _canPushRemote;
     }
 
     private static string QuoteArgument(string value)
@@ -558,6 +571,26 @@ internal sealed class MainForm : Form
         }
         catch
         {
+        }
+    }
+
+    private async Task PushRemoteAsync()
+    {
+        try
+        {
+            SetBusyState(true);
+            SetStatus("正在推送到远程...");
+
+            PublishRemoteResult result = await Task.Run(() => GitRemotePublisher.Run(_state.GameDirectory));
+            SetStatus(result.Message, isError: !result.Success);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"推送失败: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            SetBusyState(false);
         }
     }
 }
@@ -907,7 +940,7 @@ internal static class GitModUpdater
         return UpdateModsResult.Ok("Mod 更新完成。\n\n" + log);
     }
 
-    private static bool ToolExists(string toolName)
+    public static bool ToolExists(string toolName)
     {
         try
         {
@@ -1015,6 +1048,139 @@ internal sealed record UpdateModsResult(bool Success, string Message)
     public static UpdateModsResult Ok(string message) => new(true, message);
 
     public static UpdateModsResult Fail(string message) => new(false, message);
+}
+
+internal static class GitRemotePublisher
+{
+    public static PublishRemoteResult Run(string gameDirectory)
+    {
+        if (!string.Equals(Environment.UserName, "27940", StringComparison.OrdinalIgnoreCase))
+        {
+            return PublishRemoteResult.Fail("当前电脑未授权推送远程。");
+        }
+
+        if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
+        {
+            return PublishRemoteResult.Fail($"游戏目录不存在: {gameDirectory}");
+        }
+
+        if (!Directory.Exists(Path.Combine(gameDirectory, ".git")))
+        {
+            return PublishRemoteResult.Fail("游戏目录不是 git 仓库。");
+        }
+
+        if (!GitModUpdater.ToolExists("git"))
+        {
+            return PublishRemoteResult.Fail("未在 PATH 中找到 git，无法推送。");
+        }
+
+        string branch = TryGetGitValue(gameDirectory, "branch", "--show-current");
+        if (string.IsNullOrWhiteSpace(branch))
+        {
+            branch = "main";
+        }
+
+        string status = TryGetGitValue(gameDirectory, "status", "--porcelain");
+        bool hasChanges = !string.IsNullOrWhiteSpace(status);
+
+        StringBuilder log = new();
+        if (hasChanges)
+        {
+            RunGit(gameDirectory, log, "add", "-A");
+            string commitMessage = $"Mod update {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
+            RunGit(gameDirectory, log, "commit", "-m", commitMessage);
+        }
+
+        RunGit(gameDirectory, log, "push", "origin", $"HEAD:{branch}");
+
+        string message = hasChanges
+            ? $"已提交并推送到远程分支 {branch}。"
+            : $"没有本地改动，已尝试同步推送到远程分支 {branch}。";
+        return PublishRemoteResult.Ok(message);
+    }
+
+    private static string TryGetGitValue(string workdir, params string[] args)
+    {
+        try
+        {
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = "git",
+                WorkingDirectory = workdir,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+
+            foreach (string arg in args)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            using Process process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("无法启动 git 进程。");
+            string stdout = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            return process.ExitCode == 0 ? stdout.Trim() : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static void RunGit(string workdir, StringBuilder log, params string[] args)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "git",
+            WorkingDirectory = workdir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        foreach (string arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using Process process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("无法启动 git 进程。");
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        log.AppendLine($"> git {string.Join(" ", args)}");
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            log.AppendLine(stdout.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            log.AppendLine(stderr.Trim());
+        }
+        log.AppendLine();
+
+        if (process.ExitCode != 0)
+        {
+            string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            throw new InvalidOperationException($"git {string.Join(" ", args)} 执行失败: {detail}".Trim());
+        }
+    }
+}
+
+internal sealed record PublishRemoteResult(bool Success, string Message)
+{
+    public static PublishRemoteResult Ok(string message) => new(true, message);
+
+    public static PublishRemoteResult Fail(string message) => new(false, message);
 }
 
 internal static class JsonOptions
