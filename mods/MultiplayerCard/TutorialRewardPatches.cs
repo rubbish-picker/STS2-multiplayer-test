@@ -37,13 +37,24 @@ public static class TutorialRewardPatches
             return;
         }
 
+        List<CardCreationResult> results = CardsRef(__instance);
+        if (results.Count == 0)
+        {
+            return;
+        }
+
+        if (TryInjectDebugRewardCard(player, options, results))
+        {
+            MainFile.Logger.Info($"[MultiplayerCard] Injected configured debug reward card for player {player.NetId}.");
+            return;
+        }
+
         if (!MultiplayerCardConfigService.ShouldInjectHighProbabilityReward(player, options))
         {
             return;
         }
 
-        List<CardCreationResult> results = CardsRef(__instance);
-        if (results.Count == 0 || results.Any(result => MultiplayerCardConfigService.IsOurCard(result.Card)))
+        if (results.Any(result => MultiplayerCardConfigService.IsOurColorlessCard(result.Card)))
         {
             return;
         }
@@ -75,6 +86,43 @@ public static class TutorialRewardPatches
 
         results[index] = new CardCreationResult(replacement);
         MainFile.Logger.Info($"[MultiplayerCard] Injected mod card into manual encounter reward for player {player.NetId}: {replacement.Title}");
+    }
+
+    private static bool TryInjectDebugRewardCard(
+        Player player,
+        CardCreationOptions options,
+        List<CardCreationResult> results)
+    {
+        if (!MultiplayerCardConfigService.ShouldForceDebugRewardCard(player, options))
+        {
+            return false;
+        }
+
+        CardModel? canonicalCard = MultiplayerCardConfigService.GetConfiguredDebugRewardCard();
+        if (canonicalCard == null)
+        {
+            return false;
+        }
+
+        if (results.Any(result => result.Card.Id == canonicalCard.Id))
+        {
+            return false;
+        }
+
+        int index = results.FindIndex(result => result.Card.Rarity == canonicalCard.Rarity);
+        if (index < 0)
+        {
+            index = results.Count - 1;
+        }
+
+        CardModel replacement = player.RunState.CreateCard(canonicalCard, player);
+        if (results[index].Card.IsUpgraded && replacement.IsUpgradable)
+        {
+            CardCmd.Upgrade(replacement);
+        }
+
+        results[index] = new CardCreationResult(replacement);
+        return true;
     }
 
     private static CardModel? SelectRewardCandidate(CardRarity replacedRarity, HashSet<ModelId> usedIds)

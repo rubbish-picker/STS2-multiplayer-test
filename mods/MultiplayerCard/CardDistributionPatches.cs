@@ -27,7 +27,7 @@ public static class CardDistributionPatches
         }
 
         List<CardModel> cards = __result.ToList();
-        if (!cards.Any(MultiplayerCardConfigService.IsOurCard))
+        if (!cards.Any(MultiplayerCardConfigService.IsOurColorlessCard))
         {
             return;
         }
@@ -35,7 +35,7 @@ public static class CardDistributionPatches
         bool allowModCards = MultiplayerCardConfigService.ShouldAllowModCardsForConstraint(multiplayerConstraint);
         __result = allowModCards
             ? cards
-            : cards.Where(card => !MultiplayerCardConfigService.IsOurCard(card)).ToList();
+            : cards.Where(card => !MultiplayerCardConfigService.IsOurColorlessCard(card)).ToList();
     }
 
     [HarmonyPatch(typeof(CardFactory), nameof(CardFactory.CreateForReward), typeof(Player), typeof(int), typeof(CardCreationOptions))]
@@ -45,13 +45,19 @@ public static class CardDistributionPatches
         CardCreationOptions options,
         ref IEnumerable<CardCreationResult> __result)
     {
-        if (!MultiplayerCardConfigService.ShouldInjectHighProbabilityReward(player, options))
+        List<CardCreationResult> results = __result.ToList();
+        if (results.Count == 0)
         {
             return;
         }
 
-        List<CardCreationResult> results = __result.ToList();
-        if (results.Count == 0)
+        if (TryInjectDebugRewardCard(player, options, results))
+        {
+            __result = results;
+            return;
+        }
+
+        if (!MultiplayerCardConfigService.ShouldInjectHighProbabilityReward(player, options))
         {
             return;
         }
@@ -59,7 +65,7 @@ public static class CardDistributionPatches
         double chance = MultiplayerCardConfigService.GetHighProbabilityRewardChance();
         HashSet<ModelId> usedIds = results.Select(result => result.Card.Id).ToHashSet();
 
-        if (results.Any(result => MultiplayerCardConfigService.IsOurCard(result.Card)))
+        if (results.Any(result => MultiplayerCardConfigService.IsOurColorlessCard(result.Card)))
         {
             __result = results;
             return;
@@ -93,6 +99,43 @@ public static class CardDistributionPatches
         results[index] = new CardCreationResult(replacement);
 
         __result = results;
+    }
+
+    private static bool TryInjectDebugRewardCard(
+        Player player,
+        CardCreationOptions options,
+        List<CardCreationResult> results)
+    {
+        if (!MultiplayerCardConfigService.ShouldForceDebugRewardCard(player, options))
+        {
+            return false;
+        }
+
+        CardModel? canonicalCard = MultiplayerCardConfigService.GetConfiguredDebugRewardCard();
+        if (canonicalCard == null)
+        {
+            return false;
+        }
+
+        if (results.Any(result => result.Card.Id == canonicalCard.Id))
+        {
+            return false;
+        }
+
+        int index = results.FindIndex(result => result.Card.Rarity == canonicalCard.Rarity);
+        if (index < 0)
+        {
+            index = results.Count - 1;
+        }
+
+        CardModel replacement = player.RunState.CreateCard(canonicalCard, player);
+        if (results[index].Card.IsUpgraded && replacement.IsUpgradable)
+        {
+            CardCmd.Upgrade(replacement);
+        }
+
+        results[index] = new CardCreationResult(replacement);
+        return true;
     }
 
     private static CardModel? SelectRewardCandidate(CardRarity replacedRarity, HashSet<ModelId> usedIds)

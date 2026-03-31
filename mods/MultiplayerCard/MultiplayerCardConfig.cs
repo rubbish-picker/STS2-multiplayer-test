@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.CardPools;
+using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 
@@ -26,7 +27,15 @@ public enum MultiplayerCardAppearanceMode
 {
     VanillaLike,
     HighProbability,
-    DebugShop,
+    DebugReward,
+}
+
+public enum MultiplayerCardDebugForcedCard
+{
+    None,
+    ZeroSum,
+    YouSoSelfish,
+    BorrowTeammateTime,
 }
 
 public sealed class MultiplayerCardRuntimeConfig
@@ -39,6 +48,9 @@ public sealed class MultiplayerCardRuntimeConfig
 
     [JsonPropertyName("high_probability_reward_chance")]
     public double HighProbabilityRewardChance { get; set; } = 0.25;
+
+    [JsonPropertyName("debug_forced_reward_card")]
+    public string DebugForcedRewardCard { get; set; } = "none";
 }
 
 public static class MultiplayerCardConfigService
@@ -248,22 +260,71 @@ public static class MultiplayerCardConfigService
         return GetHighProbabilityRewardChance() > 0d;
     }
 
-    public static bool ShouldForceDebugShopCards(Player player)
+    public static bool ShouldForceDebugRewardCard(Player player, CardCreationOptions options)
     {
-        return ShouldAllowModCardsForRun(player.RunState) && GetAppearanceMode() == MultiplayerCardAppearanceMode.DebugShop;
+        if (!ShouldAllowModCardsForRun(player.RunState))
+        {
+            return false;
+        }
+
+        if (GetAppearanceMode() != MultiplayerCardAppearanceMode.DebugReward)
+        {
+            return false;
+        }
+
+        if (options.Source != CardCreationSource.Encounter)
+        {
+            return false;
+        }
+
+        return GetDebugForcedRewardCard() != MultiplayerCardDebugForcedCard.None;
+    }
+
+    public static bool IsOurColorlessCard(CardModel card)
+    {
+        return card is ZeroSum or YouSoSelfish;
+    }
+
+    public static bool IsOurNecrobinderCard(CardModel card)
+    {
+        return card is BorrowTeammateTime;
     }
 
     public static bool IsOurCard(CardModel card)
     {
-        return card is ZeroSum or YouSoSelfish;
+        return IsOurColorlessCard(card) || IsOurNecrobinderCard(card);
     }
 
     public static IReadOnlyList<CardModel> GetModColorlessCards()
     {
         return ModelDb.CardPool<ColorlessCardPool>()
             .AllCards
-            .Where(IsOurCard)
+            .Where(IsOurColorlessCard)
             .ToList();
+    }
+
+    public static IReadOnlyList<CardModel> GetModNecrobinderCards()
+    {
+        return ModelDb.CardPool<NecrobinderCardPool>()
+            .AllCards
+            .Where(IsOurNecrobinderCard)
+            .ToList();
+    }
+
+    public static MultiplayerCardDebugForcedCard GetDebugForcedRewardCard()
+    {
+        return ParseDebugForcedRewardCard(GetEffectiveConfig().DebugForcedRewardCard);
+    }
+
+    public static CardModel? GetConfiguredDebugRewardCard()
+    {
+        return GetDebugForcedRewardCard() switch
+        {
+            MultiplayerCardDebugForcedCard.ZeroSum => ModelDb.Card<ZeroSum>(),
+            MultiplayerCardDebugForcedCard.YouSoSelfish => ModelDb.Card<YouSoSelfish>(),
+            MultiplayerCardDebugForcedCard.BorrowTeammateTime => ModelDb.Card<BorrowTeammateTime>(),
+            _ => null,
+        };
     }
 
     public static MultiplayerCardMode ParseMode(string? raw)
@@ -283,8 +344,19 @@ public static class MultiplayerCardConfigService
         {
             "vanilla" => MultiplayerCardAppearanceMode.VanillaLike,
             "high_probability" => MultiplayerCardAppearanceMode.HighProbability,
-            "debug" => MultiplayerCardAppearanceMode.DebugShop,
+            "debug" => MultiplayerCardAppearanceMode.DebugReward,
             _ => MultiplayerCardAppearanceMode.VanillaLike,
+        };
+    }
+
+    public static MultiplayerCardDebugForcedCard ParseDebugForcedRewardCard(string? raw)
+    {
+        return raw?.Trim().ToLowerInvariant() switch
+        {
+            "zero_sum" => MultiplayerCardDebugForcedCard.ZeroSum,
+            "you_so_selfish" => MultiplayerCardDebugForcedCard.YouSoSelfish,
+            "borrow_teammate_time" => MultiplayerCardDebugForcedCard.BorrowTeammateTime,
+            _ => MultiplayerCardDebugForcedCard.None,
         };
     }
 
@@ -368,6 +440,7 @@ public static class MultiplayerCardConfigService
             Mode = config.Mode,
             AppearanceMode = config.AppearanceMode,
             HighProbabilityRewardChance = config.HighProbabilityRewardChance,
+            DebugForcedRewardCard = config.DebugForcedRewardCard,
         };
     }
 }
@@ -379,6 +452,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
         Mode = MultiplayerCardConfigService.ParseMode(source.Mode);
         AppearanceMode = MultiplayerCardConfigService.ParseAppearanceMode(source.AppearanceMode);
         HighProbabilityRewardChancePercent = Math.Clamp(source.HighProbabilityRewardChance * 100d, 0d, 100d);
+        DebugForcedRewardCard = MultiplayerCardConfigService.ParseDebugForcedRewardCard(source.DebugForcedRewardCard);
     }
 
     [ConfigSection("Card Mode")]
@@ -391,6 +465,9 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
     [SliderRange(0, 100)]
     public static double HighProbabilityRewardChancePercent { get; set; } = 25d;
 
+    [ConfigSection("Debug")]
+    public static MultiplayerCardDebugForcedCard DebugForcedRewardCard { get; set; } = MultiplayerCardDebugForcedCard.None;
+
     public MultiplayerCardRuntimeConfig ToRuntimeConfig()
     {
         return new MultiplayerCardRuntimeConfig
@@ -398,6 +475,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
             Mode = NormalizeMode(Mode),
             AppearanceMode = NormalizeAppearanceMode(AppearanceMode),
             HighProbabilityRewardChance = Math.Clamp(HighProbabilityRewardChancePercent / 100d, 0d, 1d),
+            DebugForcedRewardCard = NormalizeDebugForcedRewardCard(DebugForcedRewardCard),
         };
     }
 
@@ -418,8 +496,19 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
         {
             MultiplayerCardAppearanceMode.VanillaLike => "vanilla",
             MultiplayerCardAppearanceMode.HighProbability => "high_probability",
-            MultiplayerCardAppearanceMode.DebugShop => "debug",
+            MultiplayerCardAppearanceMode.DebugReward => "debug",
             _ => "vanilla",
+        };
+    }
+
+    private static string NormalizeDebugForcedRewardCard(MultiplayerCardDebugForcedCard card)
+    {
+        return card switch
+        {
+            MultiplayerCardDebugForcedCard.ZeroSum => "zero_sum",
+            MultiplayerCardDebugForcedCard.YouSoSelfish => "you_so_selfish",
+            MultiplayerCardDebugForcedCard.BorrowTeammateTime => "borrow_teammate_time",
+            _ => "none",
         };
     }
 }

@@ -2,5 +2,7 @@
   "MULTIPLAYERCARD-ZERO_SUM.title": "压力着你",
   "MULTIPLAYERCARD-ZERO_SUM.description": "获得{Energy:energyIcons()}。\n选择一名队友失去{DrainEnergy:energyIcons()}。\n将1张[gold]愧疚[/gold]加入你的[gold]手牌[/gold]。",
   "MULTIPLAYERCARD-YOU_SO_SELFISH.title": "你怎么这么自私",
-  "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "获得{IfUpgraded:show:4|2}点力量。\n选择一名队友失去2点生命{IfUpgraded:show:和1点最大生命值|}。"
+  "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "获得{IfUpgraded:show:4|2}点力量。\n选择一名队友失去2点生命{IfUpgraded:show:和1点最大生命值|}。",
+  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.title": "预借队友时间",
+  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.description": "选择一名队友获得{IfUpgraded:show:5|3}层灾厄。\n获得{IfUpgraded:show:3|1}{Energy:energyIcons()}。"
 }

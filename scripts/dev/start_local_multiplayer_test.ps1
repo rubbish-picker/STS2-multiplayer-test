@@ -14,7 +14,7 @@ $saveRoot = Join-Path $env:APPDATA "SlayTheSpire2"
 $launchBat = Join-Path $GameDir "launch_no_steam.bat"
 $gameExe = Join-Path $GameDir "SlayTheSpire2.exe"
 $activeLog = Join-Path $logDir "godot.log"
-$tailScript = Join-Path $PSScriptRoot "local_multiplayer_tail.ps1"
+$tailScript = Join-Path $PSScriptRoot "start_local_multiplayer_tail.ps1"
 
 if (-not (Test-Path -LiteralPath $launchBat)) {
     throw "launch_no_steam.bat not found: $launchBat"

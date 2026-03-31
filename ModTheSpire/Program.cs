@@ -25,12 +25,12 @@ internal sealed class MainForm : Form
     private readonly Button _refreshButton;
     private readonly Button _updateModsButton;
     private readonly Button _pushRemoteButton;
+    private readonly Button _deleteAccountButton;
     private readonly Button _selectAllButton;
     private readonly Button _selectNoneButton;
     private readonly Button _saveButton;
     private readonly Button _launchButton;
     private readonly Button _saveAndLaunchButton;
-    private readonly CheckBox _useSteamCheckBox;
     private readonly CheckBox _updateBeforeLaunchCheckBox;
     private readonly Label _statusLabel;
     private readonly bool _canPushRemote;
@@ -109,19 +109,18 @@ internal sealed class MainForm : Form
         _pushRemoteButton.Click += async (_, _) => await PushRemoteAsync();
         topBar.Controls.Add(_pushRemoteButton);
 
-        _useSteamCheckBox = new CheckBox
+        _deleteAccountButton = new Button
         {
             AutoSize = true,
-            Margin = new Padding(16, 8, 0, 0),
-            Text = "用 Steam 启动",
+            Text = "删除账号存档",
         };
-        _useSteamCheckBox.Checked = false;
-        topBar.Controls.Add(_useSteamCheckBox);
+        _deleteAccountButton.Click += (_, _) => DeleteSelectedAccount();
+        topBar.Controls.Add(_deleteAccountButton);
 
         _updateBeforeLaunchCheckBox = new CheckBox
         {
             AutoSize = true,
-            Margin = new Padding(12, 8, 0, 0),
+            Margin = new Padding(16, 8, 0, 0),
             Text = "启动前先更新 Mod",
         };
         _updateBeforeLaunchCheckBox.Checked = false;
@@ -371,7 +370,8 @@ internal sealed class MainForm : Form
                 existingLocalEntries[id] = modEntry;
             }
 
-            foreach (InstalledMod mod in GetCurrentSelections())
+            List<InstalledMod> currentSelections = GetCurrentSelections();
+            foreach (InstalledMod mod in currentSelections)
             {
                 if (!existingLocalEntries.TryGetValue(mod.Id, out JsonObject? entry))
                 {
@@ -386,7 +386,7 @@ internal sealed class MainForm : Form
             }
 
             modSettings["mod_list"] = modList;
-            modSettings["mods_enabled"] = true;
+            modSettings["mods_enabled"] = currentSelections.Any(mod => mod.IsEnabled);
             root["mod_settings"] = modSettings;
 
             string backupPath = $"{selectedCandidate.SettingsPath}.modthespire.bak";
@@ -459,16 +459,32 @@ internal sealed class MainForm : Form
     {
         try
         {
+            SettingsCandidate? selectedCandidate = _state.SelectedCandidate;
+            if (selectedCandidate is null)
+            {
+                throw new InvalidOperationException("请先选择一个账号目录。");
+            }
+
             if (!File.Exists(_state.GameExePath))
             {
                 throw new FileNotFoundException("未找到 SlayTheSpire2.exe", _state.GameExePath);
             }
 
             List<string> args = new();
-            if (!_useSteamCheckBox.Checked)
+            if (string.Equals(selectedCandidate.PlatformName, "editor", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("editor 账号目录仅供 Godot 编辑器使用，不能通过当前游戏构建直接启动。请选择 default/... 或 steam/... 账号目录。");
+            }
+
+            if (!string.Equals(selectedCandidate.PlatformName, "steam", StringComparison.OrdinalIgnoreCase))
             {
                 args.Add("--force-steam");
                 args.Add("off");
+                if (ulong.TryParse(selectedCandidate.UserId, out ulong clientId) && clientId != 1)
+                {
+                    args.Add("--clientId");
+                    args.Add(clientId.ToString());
+                }
             }
 
             ProcessStartInfo startInfo = new()
@@ -487,6 +503,58 @@ internal sealed class MainForm : Form
         {
             SetStatus($"启动失败: {ex.Message}", isError: true);
             MessageBox.Show(this, ex.ToString(), "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void DeleteSelectedAccount()
+    {
+        try
+        {
+            SettingsCandidate? selectedCandidate = _state.SelectedCandidate;
+            if (selectedCandidate is null)
+            {
+                throw new InvalidOperationException("没有可删除的账号目录。");
+            }
+
+            string accountDirectory = selectedCandidate.AccountDirectory;
+            string userDataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "SlayTheSpire2");
+            string normalizedRoot = Path.GetFullPath(userDataRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normalizedAccountDirectory = Path.GetFullPath(accountDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            string allowedPrefix = normalizedRoot + Path.DirectorySeparatorChar;
+            if (!normalizedAccountDirectory.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"账号目录不在允许删除的范围内: {accountDirectory}");
+            }
+
+            DialogResult confirm = MessageBox.Show(
+                this,
+                $"确认删除账号目录？\n\n{accountDirectory}\n\n这会删除该账号下的 settings.save 以及同目录存档文件。",
+                "删除账号存档",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            if (Directory.Exists(accountDirectory))
+            {
+                Directory.Delete(accountDirectory, recursive: true);
+            }
+
+            ReloadState();
+            SetStatus($"已删除账号目录: {accountDirectory}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"删除失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "删除失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -530,13 +598,13 @@ internal sealed class MainForm : Form
         UseWaitCursor = isBusy;
         _refreshButton.Enabled = !isBusy;
         _updateModsButton.Enabled = !isBusy;
+        _deleteAccountButton.Enabled = !isBusy;
         _selectAllButton.Enabled = !isBusy;
         _selectNoneButton.Enabled = !isBusy;
         _saveButton.Enabled = !isBusy;
         _launchButton.Enabled = !isBusy;
         _saveAndLaunchButton.Enabled = !isBusy;
         _accountComboBox.Enabled = !isBusy;
-        _useSteamCheckBox.Enabled = !isBusy;
         _updateBeforeLaunchCheckBox.Enabled = !isBusy;
         _modListView.Enabled = !isBusy;
         _pushRemoteButton.Enabled = !isBusy && _canPushRemote;
@@ -681,7 +749,8 @@ internal sealed record InstalledMod(
 {
     public static List<InstalledMod> Discover(string modsDirectory, SettingsCandidate? candidate)
     {
-        Dictionary<string, bool> enabledMap = candidate?.LoadEnabledMap() ?? new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        ModSelectionState selectionState = candidate?.LoadModSelectionState() ?? ModSelectionState.Default;
+        Dictionary<string, bool> enabledMap = selectionState.EnabledMap;
         List<InstalledMod> mods = new();
         HashSet<string> seenIds = new(StringComparer.OrdinalIgnoreCase);
 
@@ -716,7 +785,7 @@ internal sealed record InstalledMod(
 
                 string name = manifest["name"]?.GetValue<string>() ?? id;
                 string author = manifest["author"]?.GetValue<string>() ?? "";
-                bool isEnabled = enabledMap.TryGetValue(id, out bool value) ? value : true;
+                bool isEnabled = enabledMap.TryGetValue(id, out bool value) ? value : selectionState.DefaultEnabled;
                 mods.Add(new InstalledMod(id, name, author, manifestPath, isEnabled));
             }
             catch
@@ -739,17 +808,22 @@ internal sealed record SettingsCandidate(
 {
     public string DisplayName => $"{PlatformName}/{UserId}";
 
+    public string AccountDirectory => Path.GetDirectoryName(SettingsPath)
+        ?? throw new InvalidOperationException("settings.save 缺少父目录。");
+
     public override string ToString() => $"{DisplayName}  ({LastWriteTimeUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss})";
 
-    public Dictionary<string, bool> LoadEnabledMap()
+    public ModSelectionState LoadModSelectionState()
     {
         string json = File.ReadAllText(SettingsPath, Encoding.UTF8);
         JsonNode? node = JsonNode.Parse(json);
         Dictionary<string, bool> map = new(StringComparer.OrdinalIgnoreCase);
-        JsonArray? modList = node?["mod_settings"]?["mod_list"] as JsonArray;
+        JsonNode? modSettings = node?["mod_settings"];
+        bool modsEnabled = modSettings?["mods_enabled"]?.GetValue<bool>() ?? true;
+        JsonArray? modList = modSettings?["mod_list"] as JsonArray;
         if (modList == null)
         {
-            return map;
+            return new ModSelectionState(map, modsEnabled);
         }
 
         foreach (JsonNode? entryNode in modList)
@@ -769,7 +843,7 @@ internal sealed record SettingsCandidate(
             map[id] = entry["is_enabled"]?.GetValue<bool>() ?? true;
         }
 
-        return map;
+        return new ModSelectionState(map, modsEnabled);
     }
 
     public static List<SettingsCandidate> Discover()
@@ -812,15 +886,16 @@ internal sealed record SettingsCandidate(
         {
             return -1;
         }
-
-        int steamIndex = candidates.FindIndex(item => string.Equals(item.PlatformName, "steam", StringComparison.OrdinalIgnoreCase));
-        if (steamIndex >= 0)
-        {
-            return steamIndex;
-        }
-
         return 0;
     }
+}
+
+internal sealed record ModSelectionState(
+    Dictionary<string, bool> EnabledMap,
+    bool DefaultEnabled)
+{
+    public static ModSelectionState Default { get; } =
+        new(new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), true);
 }
 
 internal sealed class LauncherConfig
