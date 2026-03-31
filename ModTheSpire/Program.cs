@@ -41,6 +41,7 @@ internal sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(920, 640);
         Size = new Size(1100, 760);
+        ApplyLauncherIcon();
 
         TableLayoutPanel root = new()
         {
@@ -468,6 +469,7 @@ internal sealed class MainForm : Form
 
             Process.Start(startInfo);
             SetStatus($"已启动游戏: {_state.GameExePath}");
+            Close();
         }
         catch (Exception ex)
         {
@@ -489,15 +491,14 @@ internal sealed class MainForm : Form
             {
                 SetStatus("Mod 更新完成。");
                 ReloadState();
-                if (showPopupWhenFinished)
-                {
-                    MessageBox.Show(this, result.Message, "更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
                 return true;
             }
 
             SetStatus($"更新失败: {result.Message}", isError: true);
-            MessageBox.Show(this, result.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (showPopupWhenFinished)
+            {
+                MessageBox.Show(this, result.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
             return false;
         }
         catch (Exception ex)
@@ -538,6 +539,27 @@ internal sealed class MainForm : Form
         _statusLabel.Text = message;
         _statusLabel.ForeColor = isError ? Color.Firebrick : SystemColors.ControlText;
     }
+
+    private void ApplyLauncherIcon()
+    {
+        try
+        {
+            string iconPath = Path.Combine(AppContext.BaseDirectory, "assets", "very_hot_cocoa.ico");
+            if (!File.Exists(iconPath))
+            {
+                iconPath = Path.Combine(AppContext.BaseDirectory, "very_hot_cocoa.ico");
+            }
+
+            if (File.Exists(iconPath))
+            {
+                using Icon icon = new(iconPath);
+                Icon = (Icon)icon.Clone();
+            }
+        }
+        catch
+        {
+        }
+    }
 }
 
 internal sealed record LauncherState(
@@ -566,7 +588,7 @@ internal sealed record LauncherState(
     public static LauncherState Load()
     {
         LauncherConfig config = LauncherConfig.Load();
-        string gameDir = config.Sts2Path;
+        string gameDir = config.ResolveGameDirectory();
         string gameExe = Path.Combine(gameDir, "SlayTheSpire2.exe");
         string modsDir = Path.Combine(gameDir, "mods");
 
@@ -804,6 +826,38 @@ internal sealed class LauncherConfig
             "common",
             "Slay the Spire 2");
         return new LauncherConfig { Sts2Path = fallback };
+    }
+
+    public string ResolveGameDirectory()
+    {
+        string launcherDir = Path.GetFullPath(AppContext.BaseDirectory);
+        if (LooksLikeGameDirectory(launcherDir))
+        {
+            return launcherDir;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Sts2Path))
+        {
+            string configuredDir = Path.GetFullPath(Sts2Path);
+            if (LooksLikeGameDirectory(configuredDir))
+            {
+                return configuredDir;
+            }
+        }
+
+        return launcherDir;
+    }
+
+    private static bool LooksLikeGameDirectory(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return false;
+        }
+
+        string exePath = Path.Combine(directory, "SlayTheSpire2.exe");
+        string modsPath = Path.Combine(directory, "mods");
+        return File.Exists(exePath) || Directory.Exists(modsPath);
     }
 }
 
