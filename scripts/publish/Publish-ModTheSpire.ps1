@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $project = Join-Path $repoRoot "ModTheSpire\ModTheSpire.csproj"
 $configPath = Join-Path $repoRoot "config.json"
 $publishRoot = Join-Path $repoRoot "temp_mod_output\ModTheSpireLauncher"

@@ -2,7 +2,7 @@ param()
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $project = Join-Path $repoRoot "ModTheSpire\ModTheSpire.csproj"
 
 if (-not (Test-Path -LiteralPath $project)) {

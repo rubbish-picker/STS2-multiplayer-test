@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $configPath = Join-Path $repoRoot "config.json"
 $projectDir = Join-Path $repoRoot (Join-Path "mods" $ModFolderName)
 $projectFile = Join-Path $projectDir $ProjectFileName
