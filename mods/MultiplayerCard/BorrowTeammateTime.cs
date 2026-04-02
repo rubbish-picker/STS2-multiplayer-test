@@ -72,7 +72,7 @@ public sealed class BorrowTeammateTime : CustomCardModel
 
     protected override void OnUpgrade()
     {
-        base.DynamicVars.Doom.UpgradeValueBy(2m);
+        base.DynamicVars.Doom.UpgradeValueBy(7m);
         base.DynamicVars.Energy.UpgradeValueBy(2m);
     }
 
