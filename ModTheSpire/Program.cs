@@ -565,6 +565,30 @@ internal sealed class MainForm : Form
             SetBusyState(true);
             SetStatus("正在更新 Mod...");
 
+            string launcherExePath = Application.ExecutablePath;
+            if (DetachedGitUpdater.ShouldUseDetachedUpdate(_state.GameDirectory, launcherExePath))
+            {
+                DetachedUpdateStartResult startResult = DetachedGitUpdater.Start(
+                    _state.GameDirectory,
+                    _state.RemoteUrl,
+                    launcherExePath,
+                    Environment.ProcessId);
+
+                if (!startResult.Success)
+                {
+                    SetStatus($"更新失败: {startResult.Message}", isError: true);
+                    if (showPopupWhenFinished)
+                    {
+                        MessageBox.Show(this, startResult.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    return false;
+                }
+
+                SetStatus("启动器即将关闭，外部更新器会在更新后自动重新打开启动器。");
+                Close();
+                return false;
+            }
+
             UpdateModsResult result = await Task.Run(() => GitModUpdater.Run(_state.GameDirectory, _state.RemoteUrl));
 
             if (result.Success)
@@ -985,7 +1009,7 @@ internal static class GitModUpdater
 
         StringBuilder log = new();
         bool hasGitDirectory = Directory.Exists(Path.Combine(gameDirectory, ".git"));
-        if (!hasGitDirectory)
+        if (!hasGitDirectory || !TryRunGit(gameDirectory, log, "rev-parse", "--is-inside-work-tree"))
         {
             RunGit(gameDirectory, log, "init");
         }
@@ -1089,7 +1113,9 @@ internal static class GitModUpdater
 
         if (process.ExitCode != 0)
         {
-            throw new InvalidOperationException($"git {string.Join(" ", args)} 执行失败，退出码 {process.ExitCode}。");
+            string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            detail = string.IsNullOrWhiteSpace(detail) ? $"退出码 {process.ExitCode}" : detail.Trim();
+            throw new InvalidOperationException($"git {string.Join(" ", args)} 执行失败: {detail}");
         }
     }
 
@@ -1118,11 +1144,237 @@ internal static class GitModUpdater
     }
 }
 
+internal static class DetachedGitUpdater
+{
+    public static bool ShouldUseDetachedUpdate(string gameDirectory, string launcherExePath)
+    {
+        if (string.IsNullOrWhiteSpace(gameDirectory) || string.IsNullOrWhiteSpace(launcherExePath))
+        {
+            return false;
+        }
+
+        string normalizedGameDirectory = Path.GetFullPath(gameDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string normalizedLauncherPath = Path.GetFullPath(launcherExePath);
+        string gamePrefix = normalizedGameDirectory + Path.DirectorySeparatorChar;
+
+        return normalizedLauncherPath.StartsWith(gamePrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static DetachedUpdateStartResult Start(
+        string gameDirectory,
+        string remoteUrl,
+        string launcherExePath,
+        int currentProcessId)
+    {
+        try
+        {
+            string tempScriptPath = Path.Combine(
+                Path.GetTempPath(),
+                $"modthespire-update-{Guid.NewGuid():N}.ps1");
+
+            string script = BuildScript();
+            File.WriteAllText(tempScriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(tempScriptPath);
+            startInfo.ArgumentList.Add("-GameDirectory");
+            startInfo.ArgumentList.Add(gameDirectory);
+            startInfo.ArgumentList.Add("-RemoteUrl");
+            startInfo.ArgumentList.Add(remoteUrl);
+            startInfo.ArgumentList.Add("-LauncherPath");
+            startInfo.ArgumentList.Add(launcherExePath);
+            startInfo.ArgumentList.Add("-WaitProcessId");
+            startInfo.ArgumentList.Add(currentProcessId.ToString());
+
+            _ = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("无法启动外部更新器。");
+
+            return DetachedUpdateStartResult.Ok("已启动外部更新器。");
+        }
+        catch (Exception ex)
+        {
+            return DetachedUpdateStartResult.Fail($"无法启动外部更新器: {ex.Message}");
+        }
+    }
+
+    private static string BuildScript()
+    {
+        return """
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$GameDirectory,
+    [Parameter(Mandatory = $true)]
+    [string]$RemoteUrl,
+    [Parameter(Mandatory = $true)]
+    [string]$LauncherPath,
+    [Parameter(Mandatory = $true)]
+    [int]$WaitProcessId
+)
+
+$ErrorActionPreference = "Stop"
+
+Add-Type -AssemblyName System.Windows.Forms
+
+$log = New-Object System.Text.StringBuilder
+
+function Append-Log([string]$Text) {
+    [void]$log.AppendLine($Text)
+}
+
+function Run-Git([string[]]$Args) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "git"
+    $psi.WorkingDirectory = $GameDirectory
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+
+    foreach ($arg in $Args) {
+        [void]$psi.ArgumentList.Add($arg)
+    }
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $process) {
+        throw "无法启动 git 进程。"
+    }
+
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    Append-Log("> git $($Args -join ' ')")
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+        Append-Log($stdout.Trim())
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+        Append-Log($stderr.Trim())
+    }
+    Append-Log("")
+
+    if ($process.ExitCode -ne 0) {
+        $detail = if (-not [string]::IsNullOrWhiteSpace($stderr)) { $stderr.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($stdout)) { $stdout.Trim() } else { "退出码 $($process.ExitCode)" }
+        throw "git $($Args -join ' ') 执行失败: $detail"
+    }
+}
+
+function Try-RunGit([string[]]$Args) {
+    try {
+        Run-Git $Args
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+try {
+    for ($i = 0; $i -lt 600; $i++) {
+        $waitingProcess = Get-Process -Id $WaitProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $waitingProcess) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "未在 PATH 中找到 git，无法执行更新。"
+    }
+
+    if (-not (Test-Path -LiteralPath $GameDirectory)) {
+        throw "游戏目录不存在: $GameDirectory"
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $GameDirectory ".git")) -or -not (Try-RunGit @("rev-parse", "--is-inside-work-tree"))) {
+        Run-Git @("init")
+    }
+
+    $currentRemote = ""
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "git"
+        $psi.WorkingDirectory = $GameDirectory
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        [void]$psi.ArgumentList.Add("remote")
+        [void]$psi.ArgumentList.Add("get-url")
+        [void]$psi.ArgumentList.Add("origin")
+        $process = [System.Diagnostics.Process]::Start($psi)
+        if ($process -ne $null) {
+            $currentRemote = $process.StandardOutput.ReadToEnd().Trim()
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) {
+                $currentRemote = ""
+            }
+        }
+    }
+    catch {
+        $currentRemote = ""
+    }
+
+    if ([string]::IsNullOrWhiteSpace($currentRemote)) {
+        Run-Git @("remote", "add", "origin", $RemoteUrl)
+    }
+    elseif (-not [string]::Equals($currentRemote.Trim(), $RemoteUrl, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Run-Git @("remote", "set-url", "origin", $RemoteUrl)
+    }
+
+    Run-Git @("fetch", "origin", "--prune")
+
+    if (-not (Try-RunGit @("reset", "--hard", "origin/main"))) {
+        if (-not (Try-RunGit @("reset", "--hard", "origin/master"))) {
+            throw "无法重置到 origin/main 或 origin/master。"
+        }
+    }
+
+    Start-Process -FilePath $LauncherPath | Out-Null
+}
+catch {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Mod 更新失败。`r`n`r`n$($_.Exception.Message)`r`n`r`n$($log.ToString())",
+        "ModTheSpire 更新失败",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    ) | Out-Null
+    exit 1
+}
+finally {
+    try {
+        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+    }
+}
+""";
+    }
+}
+
 internal sealed record UpdateModsResult(bool Success, string Message)
 {
     public static UpdateModsResult Ok(string message) => new(true, message);
 
     public static UpdateModsResult Fail(string message) => new(false, message);
+}
+
+internal sealed record DetachedUpdateStartResult(bool Success, string Message)
+{
+    public static DetachedUpdateStartResult Ok(string message) => new(true, message);
+
+    public static DetachedUpdateStartResult Fail(string message) => new(false, message);
 }
 
 internal static class GitRemotePublisher
