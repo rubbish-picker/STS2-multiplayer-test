@@ -4,5 +4,8 @@
   "MULTIPLAYERCARD-YOU_SO_SELFISH.title": "Why Are You So Selfish",
   "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "Gain {IfUpgraded:show:4|2} Strength.\nA teammate loses 2 HP{IfUpgraded:show: and 1 Max HP|}.",
   "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.title": "Borrow Teammate Time",
-  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.description": "Choose a teammate to gain {IfUpgraded:show:10|3} Doom.\nGain {IfUpgraded:show:3|1} {Energy:energyIcons()}."
+  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.description": "Choose a teammate to gain {IfUpgraded:show:10|3} Doom.\nGain {IfUpgraded:show:3|1} {Energy:energyIcons()}.",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.title": "Drop Handkerchief",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.description": "Choose a teammate.\nChoose 1 card in their hand.\nExchange that card with this card.",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.selectionScreenPrompt": "Choose a teammate hand card to exchange."
 }

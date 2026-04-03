@@ -8,9 +8,13 @@ using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
+using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
+using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Random;
@@ -45,6 +49,105 @@ public static class CocoRelicsPatches
     public static bool SkipWatcherRestSiteCharacterPatchDuringPreview()
     {
         return !_watcherRestSitePreviewCompatibilityActive;
+    }
+
+    [HarmonyPatch]
+    private static class MultiplayerLobbyCtorPatch
+    {
+        private static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+        {
+            foreach (var ctor in AccessTools.GetDeclaredConstructors(typeof(StartRunLobby)))
+            {
+                yield return ctor;
+            }
+
+            foreach (var ctor in AccessTools.GetDeclaredConstructors(typeof(LoadRunLobby)))
+            {
+                yield return ctor;
+            }
+
+            foreach (var ctor in AccessTools.GetDeclaredConstructors(typeof(RunLobby)))
+            {
+                yield return ctor;
+            }
+        }
+
+        private static void Postfix()
+        {
+            CocoRelicsMultiplayerSync.InitializeForRun();
+        }
+    }
+
+    [HarmonyPatch(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.BeginRun))]
+    private static class CharacterSelectBeginRunPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.Reload();
+            CocoRelicsMultiplayerSync.InitializeForRun();
+            CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
+        }
+    }
+
+    [HarmonyPatch(typeof(NCustomRunScreen), nameof(NCustomRunScreen.BeginRun))]
+    private static class CustomRunBeginRunPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.Reload();
+            CocoRelicsMultiplayerSync.InitializeForRun();
+            CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
+        }
+    }
+
+    [HarmonyPatch(typeof(NDailyRunScreen), nameof(NDailyRunScreen.BeginRun))]
+    private static class DailyRunBeginRunPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.Reload();
+            CocoRelicsMultiplayerSync.InitializeForRun();
+            CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewSinglePlayer))]
+    private static class SetUpNewSinglePlayerPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: false);
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewMultiPlayer))]
+    private static class SetUpNewMultiPlayerPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: true);
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.Launch))]
+    private static class RunManagerLaunchPatch
+    {
+        private static void Postfix()
+        {
+            CocoRelicsConfigService.EnsureRunConfigLoaded();
+            CocoRelicsMultiplayerSync.InitializeForRun();
+            CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+    private static class RunManagerCleanUpPatch
+    {
+        private static void Prefix()
+        {
+            CocoRelicsConfigService.ClearRunLockInMemory();
+            CocoRelicsMultiplayerSync.Clear();
+        }
     }
 
     [HarmonyPatch(typeof(NMapScreen), "_Ready")]
@@ -124,7 +227,7 @@ public static class CocoRelicsPatches
     [HarmonyPostfix]
     private static void UseObservedRoomType(MapPointType pointType, ref RoomType __result)
     {
-        if (pointType != MapPointType.Unknown || !_currentEnteringCoord.HasValue)
+        if (pointType != MapPointType.Unknown)
         {
             return;
         }
@@ -135,9 +238,10 @@ public static class CocoRelicsPatches
             return;
         }
 
-        if (CocoRelicsState.TryGet(_currentEnteringCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info))
+        if (TryGetObservedEnteringRoom(runState, out MapCoord coord, out ObservedRoomInfo info))
         {
             __result = info.RoomType;
+            MainFile.Logger.Info($"Using frozen room type for {coord}: {info.RoomType}.");
         }
     }
 
@@ -145,18 +249,13 @@ public static class CocoRelicsPatches
     [HarmonyPrefix]
     private static void UseObservedRoomModel(ref RoomType roomType, ref MapPointType mapPointType, ref AbstractModel? model)
     {
-        if (!_currentEnteringCoord.HasValue)
-        {
-            return;
-        }
-
         RunState? runState = CocoRelicsState.GetRunState();
         if (runState == null)
         {
             return;
         }
 
-        if (!CocoRelicsState.TryGet(_currentEnteringCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info))
+        if (!TryGetObservedEnteringRoom(runState, out MapCoord coord, out ObservedRoomInfo info))
         {
             return;
         }
@@ -175,10 +274,55 @@ public static class CocoRelicsPatches
 
         model = info.RoomType switch
         {
-            RoomType.Monster or RoomType.Elite or RoomType.Boss => ModelDb.GetById<EncounterModel>(info.ModelId),
+            RoomType.Monster or RoomType.Elite or RoomType.Boss => ModelDb.GetById<EncounterModel>(info.ModelId).ToMutable(),
             RoomType.Event => ModelDb.GetById<EventModel>(info.ModelId),
             _ => model,
         };
+
+        MainFile.Logger.Info($"Using frozen room model for {coord}: type={info.RoomType} model={info.ModelId?.Entry ?? "none"}.");
+    }
+
+    [HarmonyPatch(typeof(RunManager), "CreateRoom")]
+    [HarmonyPostfix]
+    private static void ForceObservedCreatedRoom(ref AbstractRoom __result, RoomType roomType, MapPointType mapPointType, AbstractModel? model)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null)
+        {
+            return;
+        }
+
+        if (!TryGetObservedEnteringRoom(runState, out MapCoord coord, out ObservedRoomInfo info))
+        {
+            return;
+        }
+
+        __result = CreateObservedRoom(info, runState, mapPointType);
+        MainFile.Logger.Info($"Rebuilt frozen room for {coord}: type={info.RoomType} model={info.ModelId?.Entry ?? "none"}.");
+    }
+
+    [HarmonyPatch(typeof(RunManager), "EnterRoomInternal")]
+    [HarmonyPrefix]
+    private static void ForceObservedRoomBeforeEnter(ref AbstractRoom room)
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null || runState.CurrentRoomCount != 0)
+        {
+            return;
+        }
+
+        if (!TryGetObservedEnteringRoom(runState, out MapCoord coord, out ObservedRoomInfo info))
+        {
+            return;
+        }
+
+        if (room.RoomType == info.RoomType && room.ModelId == info.ModelId)
+        {
+            return;
+        }
+
+        room = CreateObservedRoom(info, runState, runState.CurrentMapPoint?.PointType ?? MapPointType.Unassigned);
+        MainFile.Logger.Info($"Forced frozen room before enter for {coord}: type={info.RoomType} model={info.ModelId?.Entry ?? "none"}.");
     }
 
     [HarmonyPatch(typeof(MerchantInventory), nameof(MerchantInventory.CreateForNormalMerchant))]
@@ -315,7 +459,15 @@ public static class CocoRelicsPatches
     private static void ClearObservedSessionOnRunEnded()
     {
         CocoRelicsState.Clear();
+        CocoRelicsConfigService.ClearPersistedRunConfig(RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false);
         CocoRelicsStorage.ClearCurrentSession();
+    }
+
+    [HarmonyPatch(typeof(Player), nameof(Player.AddRelicInternal))]
+    [HarmonyPostfix]
+    private static void TryFuseMealRelic(Player __instance)
+    {
+        CocoRelicsMealService.TryQueueFusion(__instance);
     }
 
     [HarmonyPatch(typeof(NCombatRoom), "UpdateCreatureNavigation")]
@@ -437,6 +589,49 @@ public static class CocoRelicsPatches
         }
 
         return null;
+    }
+
+    private static bool TryGetObservedEnteringRoom(RunState runState, out MapCoord coord, out ObservedRoomInfo info)
+    {
+        MapCoord? enteringCoord = runState.CurrentMapCoord ?? _currentEnteringCoord;
+        if (!enteringCoord.HasValue)
+        {
+            coord = default;
+            info = null!;
+            return false;
+        }
+
+        coord = enteringCoord.Value;
+        return CocoRelicsState.TryGet(coord, runState.CurrentActIndex, out info);
+    }
+
+    private static AbstractRoom CreateObservedRoom(ObservedRoomInfo info, RunState runState, MapPointType mapPointType)
+    {
+        return info.RoomType switch
+        {
+            RoomType.Monster or RoomType.Elite or RoomType.Boss =>
+                new CombatRoom(ModelDb.GetById<EncounterModel>(info.ModelId!).ToMutable(), runState),
+            RoomType.Event =>
+                new EventRoom(ModelDb.GetById<EventModel>(info.ModelId!)),
+            RoomType.Treasure =>
+                new TreasureRoom(runState.CurrentActIndex),
+            RoomType.Shop =>
+                new MerchantRoom(),
+            RoomType.RestSite =>
+                new RestSiteRoom(),
+            RoomType.Map =>
+                new MapRoom(),
+            _ => roomTypeFromFallback(info, runState, mapPointType),
+        };
+    }
+
+    private static AbstractRoom roomTypeFromFallback(ObservedRoomInfo info, RunState runState, MapPointType mapPointType)
+    {
+        return info.RoomType switch
+        {
+            RoomType.Event when mapPointType == MapPointType.Ancient => new EventRoom(ModelDb.GetById<EventModel>(info.ModelId!)),
+            _ => new MapRoom(),
+        };
     }
 
     private static async System.Threading.Tasks.Task<int> ApplyObservedTreasureGoldAsync(Player player, int goldAmount)

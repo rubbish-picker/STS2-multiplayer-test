@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Context;
@@ -49,7 +50,8 @@ public sealed class ObservedTreasurePreview
 
 public static class CocoRelicsState
 {
-    private static readonly Dictionary<ObservedRoomKey, ObservedRoomInfo> ObservedRooms = new();
+    private static readonly Dictionary<ObservedRoomKey, ObservedRoomInfo> FrozenObservedRooms = new();
+    private static readonly SemaphoreSlim ObserveSemaphore = new(1, 1);
     private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, RelicGrabBag>? SharedRelicGrabBagRef =
         AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, RelicGrabBag>("_sharedGrabBag");
     private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Rng>? TreasureRelicRngRef =
@@ -71,17 +73,17 @@ public static class CocoRelicsState
 
     public static void Clear()
     {
-        ObservedRooms.Clear();
+        FrozenObservedRooms.Clear();
     }
 
     public static IReadOnlyDictionary<ObservedRoomKey, ObservedRoomInfo> GetObservedRooms()
     {
-        return ObservedRooms;
+        return FrozenObservedRooms;
     }
 
     public static void LoadPersistedSession(RunState runState)
     {
-        ObservedRooms.Clear();
+        FrozenObservedRooms.Clear();
         CocoObservedSessionSave? save = CocoRelicsStorage.LoadCurrentSession(runState);
         if (save == null)
         {
@@ -90,7 +92,10 @@ public static class CocoRelicsState
 
         foreach (CocoObservedRoomInfoSave roomSave in save.ObservedRooms.Where(room => room.ActIndex == runState.CurrentActIndex))
         {
-            ObservedRooms[new ObservedRoomKey(roomSave.ActIndex, roomSave.Coord)] = CocoRelicsStorage.FromSave(roomSave, runState);
+            if (CocoRelicsStorage.TryFromSave(roomSave, runState, out ObservedRoomInfo? restored) && restored != null)
+            {
+                FreezeObserved(new ObservedRoomKey(roomSave.ActIndex, roomSave.Coord), restored);
+            }
         }
     }
 
@@ -106,48 +111,80 @@ public static class CocoRelicsState
 
     public static bool TryGet(MapCoord coord, int actIndex, out ObservedRoomInfo info)
     {
-        return ObservedRooms.TryGetValue(new ObservedRoomKey(actIndex, coord), out info!);
+        return FrozenObservedRooms.TryGetValue(new ObservedRoomKey(actIndex, coord), out info!);
     }
 
     public static async Task<ObservedRoomInfo> GetOrObserveAsync(MapPoint point, RunState runState)
     {
         ObservedRoomKey key = new(runState.CurrentActIndex, point.coord);
-        if (ObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
+        if (FrozenObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
         {
             return existing;
         }
 
-        ObservedRoomInfo observed = await ObservePointAsync(point, runState);
-        ObservedRooms[key] = observed;
-        CocoRelicsStorage.SaveCurrentSession(runState, ObservedRooms);
-        return observed;
+        await ObserveSemaphore.WaitAsync();
+        try
+        {
+            if (FrozenObservedRooms.TryGetValue(key, out existing))
+            {
+                return existing;
+            }
+
+            ObservedRoomInfo observed = await ObservePointAsync(point, runState);
+            return FreezeObserved(key, observed, runState);
+        }
+        finally
+        {
+            ObserveSemaphore.Release();
+        }
+    }
+
+    public static void SetObserved(MapCoord coord, int actIndex, ObservedRoomInfo info, RunState runState)
+    {
+        FreezeObserved(new ObservedRoomKey(actIndex, coord), info, runState);
     }
 
     private static async Task<ObservedRoomInfo> ObservePointAsync(MapPoint point, RunState runState)
     {
-        int actIndex = runState.CurrentActIndex;
         RunState observedRunState = CloneRunState(runState);
         ObservedRoomInfo? lastObserved = null;
-        foreach (MapPoint simulatedPoint in GetPathFromCurrentPoint(observedRunState, point))
+        IReadOnlyList<MapPoint> selectedPath = SelectPathFromCurrentPoint(observedRunState, point);
+        int globalObservedEventCount = FrozenObservedRooms.Values.Count(static info => info.RoomType == RoomType.Event);
+        int encounteredObservedEventsOnPath = 0;
+        int reservedOffPathEventsInState = 0;
+        foreach (MapPoint simulatedPoint in selectedPath)
         {
-            ObservedRoomKey key = new(actIndex, simulatedPoint.coord);
-            if (ObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
+            ObservedRoomKey key = new(runState.CurrentActIndex, simulatedPoint.coord);
+            if (FrozenObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
             {
-                lastObserved = existing;
                 if (existing.SnapshotAfterPoint != null)
                 {
+                    lastObserved = existing;
                     observedRunState = CocoRelicsStorage.RestoreSnapshot(existing.SnapshotAfterPoint, runState);
-                }
-                else
-                {
-                    observedRunState = ApplyObservedPointToSimulation(simulatedPoint, existing, observedRunState);
+                    reservedOffPathEventsInState = 0;
+                    if (existing.RoomType == RoomType.Event)
+                    {
+                        encounteredObservedEventsOnPath++;
+                    }
+                    continue;
                 }
 
+                lastObserved = existing;
+                observedRunState = ApplyObservedPointToSimulation(simulatedPoint, existing, observedRunState);
+                if (existing.RoomType == RoomType.Event)
+                {
+                    encounteredObservedEventsOnPath++;
+                }
                 continue;
             }
 
-            lastObserved = await ObserveSimulatedPointAsync(simulatedPoint, observedRunState);
-            ObservedRooms[key] = lastObserved;
+            int extraObservedEventReservations = Math.Max(0, globalObservedEventCount - encounteredObservedEventsOnPath);
+            lastObserved = await ObserveSimulatedPointAsync(simulatedPoint, observedRunState, extraObservedEventReservations - reservedOffPathEventsInState);
+            FreezeObserved(key, lastObserved);
+            if (lastObserved.RoomType == RoomType.Event)
+            {
+                reservedOffPathEventsInState = extraObservedEventReservations;
+            }
         }
 
         return lastObserved ?? new ObservedRoomInfo
@@ -156,10 +193,15 @@ public static class CocoRelicsState
         };
     }
 
-    private static async Task<ObservedRoomInfo> ObserveSimulatedPointAsync(MapPoint point, RunState observedRunState)
+    private static async Task<ObservedRoomInfo> ObserveSimulatedPointAsync(MapPoint point, RunState observedRunState, int extraObservedEventReservations)
     {
         observedRunState.AddVisitedMapCoord(point.coord);
         RoomType roomType = ResolveRoomType(point, observedRunState);
+        if (roomType == RoomType.Event && point.PointType != MapPointType.Ancient)
+        {
+            ReserveObservedEventSlots(observedRunState, extraObservedEventReservations);
+        }
+
         ModelId? modelId = roomType switch
         {
             RoomType.Monster or RoomType.Elite or RoomType.Boss => observedRunState.Act.PullNextEncounter(roomType).Id,
@@ -183,6 +225,15 @@ public static class CocoRelicsState
             TreasurePreview = treasurePreview,
             SnapshotAfterPoint = CocoRelicsStorage.CaptureSnapshot(observedRunState),
         };
+    }
+
+    private static void ReserveObservedEventSlots(RunState observedRunState, int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            observedRunState.Act.PullNextEvent(observedRunState);
+            observedRunState.Act.MarkRoomVisited(RoomType.Event);
+        }
     }
 
     private static RunState ApplyObservedPointToSimulation(MapPoint point, ObservedRoomInfo info, RunState observedRunState)
@@ -211,6 +262,26 @@ public static class CocoRelicsState
         observedRunState.AppendToMapPointHistory(point.PointType, info.RoomType, info.ModelId);
         observedRunState.Act.MarkRoomVisited(info.RoomType);
         return observedRunState;
+    }
+
+    private static ObservedRoomInfo FreezeObserved(ObservedRoomKey key, ObservedRoomInfo info, RunState? runState = null)
+    {
+        if (!FrozenObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
+        {
+            FrozenObservedRooms[key] = info;
+            existing = info;
+            MainFile.Logger.Info($"Frozen observed room at {key.Coord} act={key.ActIndex}: type={info.RoomType} model={info.ModelId?.Entry ?? "none"}.");
+            if (runState != null)
+            {
+                CocoRelicsStorage.SaveCurrentSession(runState, FrozenObservedRooms);
+            }
+        }
+        else if (runState != null)
+        {
+            CocoRelicsStorage.SaveCurrentSession(runState, FrozenObservedRooms);
+        }
+
+        return existing;
     }
 
     private static MerchantInventory ObserveShop(RunState runState)
@@ -317,7 +388,7 @@ public static class CocoRelicsState
         return cloned;
     }
 
-    private static IReadOnlyList<MapPoint> GetPathFromCurrentPoint(RunState runState, MapPoint targetPoint)
+    private static IReadOnlyList<MapPoint> SelectPathFromCurrentPoint(RunState runState, MapPoint targetPoint)
     {
         MapPoint? currentPoint = runState.CurrentMapPoint ?? runState.Map.StartingMapPoint;
         if (currentPoint == null || currentPoint.coord.Equals(targetPoint.coord))
@@ -326,23 +397,25 @@ public static class CocoRelicsState
         }
 
         HashSet<MapPoint> currentDescendants = GetDescendantsIncludingSelf(currentPoint);
-        List<MapPoint> reversedPath = new();
-        MapPoint? cursor = runState.Map.GetPoint(targetPoint.coord);
-        while (cursor != null && !cursor.coord.Equals(currentPoint.coord))
-        {
-            reversedPath.Add(cursor);
-            cursor = cursor.parents
-                .OrderByDescending(parent => parent.coord.row)
-                .FirstOrDefault(parent => parent.coord.row >= currentPoint.coord.row && currentDescendants.Contains(parent));
-        }
-
-        if (cursor == null)
+        List<List<MapPoint>> candidatePaths = new();
+        CollectPathsToTarget(runState.Map.GetPoint(targetPoint.coord), currentPoint, currentDescendants, new List<MapPoint>(), candidatePaths);
+        if (candidatePaths.Count == 0)
         {
             return new[] { targetPoint };
         }
 
-        reversedPath.Reverse();
-        return reversedPath;
+        CocoRelicsPreviewPathMode mode = CocoRelicsConfigService.GetPreviewPathMode();
+        ScoredPath? selected = null;
+        foreach (List<MapPoint> candidatePath in candidatePaths)
+        {
+            ScoredPath scored = ScorePath(runState, candidatePath);
+            if (selected == null || IsBetterPath(scored, selected, mode))
+            {
+                selected = scored;
+            }
+        }
+
+        return selected?.Path ?? candidatePaths[0];
     }
 
     private static HashSet<MapPoint> GetDescendantsIncludingSelf(MapPoint start)
@@ -367,4 +440,112 @@ public static class CocoRelicsState
 
         return descendants;
     }
+
+    private static void CollectPathsToTarget(
+        MapPoint? cursor,
+        MapPoint currentPoint,
+        HashSet<MapPoint> currentDescendants,
+        List<MapPoint> reversedPath,
+        List<List<MapPoint>> results)
+    {
+        if (cursor == null)
+        {
+            return;
+        }
+
+        if (cursor.coord.Equals(currentPoint.coord))
+        {
+            List<MapPoint> path = reversedPath.ToList();
+            path.Reverse();
+            results.Add(path);
+            return;
+        }
+
+        reversedPath.Add(cursor);
+        foreach (MapPoint parent in cursor.parents
+                     .Where(parent => parent.coord.row >= currentPoint.coord.row && currentDescendants.Contains(parent))
+                     .OrderBy(parent => parent.coord.col)
+                     .ThenBy(parent => parent.coord.row))
+        {
+            CollectPathsToTarget(parent, currentPoint, currentDescendants, reversedPath, results);
+        }
+
+        reversedPath.RemoveAt(reversedPath.Count - 1);
+    }
+
+    private static ScoredPath ScorePath(RunState runState, IReadOnlyList<MapPoint> path)
+    {
+        RunState simulated = CloneRunState(runState);
+        int samePoolCountBeforeTarget = 0;
+        int totalCountBeforeTarget = 0;
+        RoomType targetRoomType = RoomType.Map;
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            MapPoint point = path[i];
+            simulated.AddVisitedMapCoord(point.coord);
+            RoomType roomType = ResolveRoomType(point, simulated);
+            ModelId? modelId = roomType switch
+            {
+                RoomType.Monster or RoomType.Elite or RoomType.Boss => simulated.Act.PullNextEncounter(roomType).Id,
+                RoomType.Event => point.PointType == MapPointType.Ancient
+                    ? simulated.Act.PullAncient().Id
+                    : simulated.Act.PullNextEvent(simulated).Id,
+                _ => null,
+            };
+
+            if (i == path.Count - 1)
+            {
+                targetRoomType = roomType;
+                samePoolCountBeforeTarget = CountPoolProgress(simulated, roomType);
+            }
+
+            simulated.AppendToMapPointHistory(point.PointType, roomType, modelId);
+            simulated.Act.MarkRoomVisited(roomType);
+
+            if (i < path.Count - 1)
+            {
+                totalCountBeforeTarget++;
+            }
+        }
+
+        return new ScoredPath(path.ToList(), targetRoomType, samePoolCountBeforeTarget, totalCountBeforeTarget);
+    }
+
+    private static int CountPoolProgress(RunState runState, RoomType roomType)
+    {
+        return roomType switch
+        {
+            RoomType.Event => runState.MapPointHistory.SelectMany(static history => history).Count(static entry => entry.HasRoomOfType(RoomType.Event)),
+            RoomType.Monster => runState.MapPointHistory.SelectMany(static history => history).Count(static entry => entry.HasRoomOfType(RoomType.Monster)),
+            RoomType.Elite => runState.MapPointHistory.SelectMany(static history => history).Count(static entry => entry.HasRoomOfType(RoomType.Elite)),
+            RoomType.Boss => runState.MapPointHistory.SelectMany(static history => history).Count(static entry => entry.HasRoomOfType(RoomType.Boss)),
+            _ => runState.MapPointHistory.SelectMany(static history => history).Count(),
+        };
+    }
+
+    private static bool IsBetterPath(ScoredPath candidate, ScoredPath current, CocoRelicsPreviewPathMode mode)
+    {
+        int primary = candidate.SamePoolCountBeforeTarget.CompareTo(current.SamePoolCountBeforeTarget);
+        if (primary != 0)
+        {
+            return mode == CocoRelicsPreviewPathMode.Nearest ? primary < 0 : primary > 0;
+        }
+
+        int secondary = candidate.TotalCountBeforeTarget.CompareTo(current.TotalCountBeforeTarget);
+        if (secondary != 0)
+        {
+            return mode == CocoRelicsPreviewPathMode.Nearest ? secondary < 0 : secondary > 0;
+        }
+
+        string candidateKey = string.Join(";", candidate.Path.Select(static point => $"{point.coord.row},{point.coord.col}"));
+        string currentKey = string.Join(";", current.Path.Select(static point => $"{point.coord.row},{point.coord.col}"));
+        return string.CompareOrdinal(candidateKey, currentKey) < 0;
+    }
+
+    private sealed record ScoredPath(
+        List<MapPoint> Path,
+        RoomType TargetRoomType,
+        int SamePoolCountBeforeTarget,
+        int TotalCountBeforeTarget);
 }

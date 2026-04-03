@@ -1,5 +1,8 @@
 {
   "COCORELICS-ZEDU_COCO.title": "Zedu Cocoa",
   "COCORELICS-ZEDU_COCO.description": "Right-click a room on the map to preview its contents. Unknown rooms become fixed the moment you observe them.",
-  "COCORELICS-ZEDU_COCO.flavor": "Once Cocoa sees it, chance stops pretending."
+  "COCORELICS-ZEDU_COCO.flavor": "Once Cocoa sees it, chance stops pretending.",
+  "COCORELICS-BIG_MEAL.title": "Big Meal",
+  "COCORELICS-BIG_MEAL.description": "At the start of your turn, gain [blue]{Energy:energyIcons()}[/blue]. After surviving {SurviveRounds} rounds in a combat, you immediately die. If a teammate is still alive when you die, this relic transfers to a random surviving teammate.",
+  "COCORELICS-BIG_MEAL.flavor": "Mix two cocoas together and somehow it now counts as a full meal."
 }

@@ -165,7 +165,7 @@ public partial class CocoPreviewOverlay : Control
             return;
         }
 
-        ObservedRoomInfo info = await CocoRelicsState.GetOrObserveAsync(point, runState);
+        ObservedRoomInfo info = await CocoRelicsMultiplayerSync.GetOrRequestObservedRoomAsync(point, runState);
         Visible = true;
         MoveToFront();
         SetLoading(true);

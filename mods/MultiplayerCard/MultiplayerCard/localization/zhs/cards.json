@@ -4,5 +4,8 @@
   "MULTIPLAYERCARD-YOU_SO_SELFISH.title": "你怎么这么自私",
   "MULTIPLAYERCARD-YOU_SO_SELFISH.description": "获得{IfUpgraded:show:4|2}点力量。\n选择一名队友失去2点生命{IfUpgraded:show:和1点最大生命值|}。",
   "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.title": "预借队友时间",
-  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.description": "选择一名队友获得{IfUpgraded:show:10|3}层灾厄。\n获得{IfUpgraded:show:3|1}{Energy:energyIcons()}。"
+  "MULTIPLAYERCARD-BORROW_TEAMMATE_TIME.description": "选择一名队友获得{IfUpgraded:show:10|3}层灾厄。\n获得{IfUpgraded:show:3|1}{Energy:energyIcons()}。",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.title": "丢手绢",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.description": "选择一名队友。\n选择其手牌中的1张牌。\n将该牌与本牌交换。",
+  "MULTIPLAYERCARD-DROP_HANDKERCHIEF.selectionScreenPrompt": "选择1张要交换的队友手牌。"
 }

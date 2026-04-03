@@ -245,6 +245,11 @@ public static class CocoRelicsStorage
 
     public static ObservedRoomInfo FromSave(CocoObservedRoomInfoSave save, RunState runState)
     {
+        if (!IsRoomSaveValid(save))
+        {
+            throw new InvalidOperationException($"Observed room cache contains missing model references for coord {save.Coord}.");
+        }
+
         return new ObservedRoomInfo
         {
             RoomType = save.RoomType,
@@ -260,6 +265,32 @@ public static class CocoRelicsStorage
             },
             SnapshotAfterPoint = save.SnapshotAfterPoint,
         };
+    }
+
+    public static bool TryFromSave(CocoObservedRoomInfoSave save, RunState runState, out ObservedRoomInfo? info)
+    {
+        info = null;
+        try
+        {
+            if (!IsRoomSaveValid(save))
+            {
+                MainFile.Logger.Warn($"[CocoRelics] discarded observed-room cache at {save.Coord} because one or more referenced models are missing.");
+                return false;
+            }
+
+            info = FromSave(save, runState);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Warn($"[CocoRelics] discarded observed-room cache at {save.Coord} because it could not be restored: {ex.Message}");
+            return false;
+        }
+    }
+
+    public static CocoObservedRoomInfoSave CreateRoomSave(ObservedRoomKey key, ObservedRoomInfo info)
+    {
+        return ToSave(key, info);
     }
 
     public static RunState RestoreSnapshot(CocoObservedRunSnapshot snapshot, RunState liveRunState)
@@ -294,6 +325,31 @@ public static class CocoRelicsStorage
             },
             SnapshotAfterPoint = info.SnapshotAfterPoint,
         };
+    }
+
+    private static bool IsRoomSaveValid(CocoObservedRoomInfoSave save)
+    {
+        if (save.ModelId != null)
+        {
+            bool primaryModelExists = save.RoomType switch
+            {
+                RoomType.Monster or RoomType.Elite or RoomType.Boss => ModelDb.GetByIdOrNull<EncounterModel>(save.ModelId) != null,
+                RoomType.Event => ModelDb.GetByIdOrNull<EventModel>(save.ModelId) != null,
+                _ => true,
+            };
+
+            if (!primaryModelExists)
+            {
+                return false;
+            }
+        }
+
+        if (save.TreasurePreview != null && save.TreasurePreview.RelicIds.Any(id => ModelDb.GetByIdOrNull<RelicModel>(id) == null))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static SerializableRun CreateSerializableRun(RunState runState)
