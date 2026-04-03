@@ -1,6 +1,6 @@
 {
   "COCORELICS-ZEDU_COCO.title": "泽渡可可",
-  "COCORELICS-ZEDU_COCO.description": "右键观测房间，被你观测的房间将被[red]确定[/red]",
+  "COCORELICS-ZEDU_COCO.description": "右键观测房间，被你观测的房间将被[red]确定[/red]。可与烫嘴可可合成大餐",
   "COCORELICS-ZEDU_COCO.flavor": "薛定谔的猫",
   "COCORELICS-BIG_MEAL.title": "大餐",
   "COCORELICS-BIG_MEAL.description": "每回合获得[blue]{Energy:energyIcons()}[/blue]。你在{SurviveRounds}回合后死亡并将该遗物转移给一名队友。",

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -6,6 +7,7 @@ using BaseLib;
 using BaseLib.Abstracts;
 using BaseLib.Utils;
 using Godot;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
@@ -22,8 +24,6 @@ using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
-using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
-using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Runs;
 using MultiplayerCard.Extensions;
 
@@ -64,6 +64,7 @@ public sealed class DropHandkerchief : CustomCardModel
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
         Player? teammate = cardPlay.Target?.Player;
+        MainFile.Logger.Info($"[DropHandkerchief] OnPlay begin. owner={base.Owner?.NetId}, target={teammate?.NetId}, context={choiceContext.GetType().Name}, action={DescribeCurrentAction()}");
         if (teammate == null || teammate == base.Owner)
         {
             return;
@@ -77,31 +78,27 @@ public sealed class DropHandkerchief : CustomCardModel
 
         if (!IsTeammateStillValid(teammate))
         {
+            MainFile.Logger.Info($"[DropHandkerchief] Target invalid before teammate card selection. target={teammate.NetId}, action={DescribeCurrentAction()}");
             await CancelCurrentPlayAndReturnToHand(cardPlay.Resources);
             return;
         }
 
-        Player originalOwner = base.Owner;
-        while (true)
+        (SelectionOutcome outcome, MegaCrit.Sts2.Core.Models.CardModel? selectedCard) = await ChooseTeammateHandCard(choiceContext, teammate);
+        MainFile.Logger.Info($"[DropHandkerchief] Teammate selection finished. outcome={outcome}, selected={selectedCard?.Id.Entry ?? "null"}, action={DescribeCurrentAction()}");
+        if (outcome == SelectionOutcome.TargetInvalid)
         {
-            (SelectionOutcome outcome, MegaCrit.Sts2.Core.Models.CardModel? selectedCard) = await ChooseTeammateHandCard(choiceContext, teammate);
-            if (outcome == SelectionOutcome.TargetInvalid)
-            {
-                await CancelCurrentPlayAndReturnToHand(cardPlay.Resources);
-                return;
-            }
+            await CancelCurrentPlayAndReturnToHand(cardPlay.Resources);
+            return;
+        }
 
-            if (outcome == SelectionOutcome.NoCard || selectedCard == null)
-            {
-                return;
-            }
+        if (outcome == SelectionOutcome.NoCard || selectedCard == null)
+        {
+            return;
+        }
 
-            if (await TransferExistingCardToHand(selectedCard, originalOwner, requireCurrentHandOwner: teammate))
-            {
-                break;
-            }
-
-            MainFile.Logger.Info($"[DropHandkerchief] Selected teammate card changed before transfer completed. Reopening selection for player {teammate.NetId}.");
+        if (!await TransferExistingCardToHand(selectedCard, base.Owner, requireCurrentHandOwner: teammate))
+        {
+            return;
         }
 
         MegaCrit.Sts2.Core.Models.CardModel transferredSelf = CardModel.FromSerializable(this.ToSerializable());
@@ -132,163 +129,107 @@ public sealed class DropHandkerchief : CustomCardModel
             return (SelectionOutcome.NoCard, null);
         }
 
-        Player selectingPlayer = base.Owner;
         CardSelectorPrefs prefs = new(SelectionScreenPrompt, 1);
-        uint choiceId = RunManager.Instance.PlayerChoiceSynchronizer.ReserveChoiceId(selectingPlayer);
-        await choiceContext.SignalPlayerChoiceBegun(PlayerChoiceOptions.None);
-
+        MainFile.Logger.Info(
+            $"[DropHandkerchief] Opening teammate hand select. owner={base.Owner.NetId}, target={teammate.NetId}, " +
+            $"handCount={initialHandCards.Count}, context={choiceContext.GetType().Name}, action={DescribeCurrentAction()}, " +
+            $"paused={RunManager.Instance.ActionExecutor.IsPaused}, running={RunManager.Instance.ActionExecutor.IsRunning}");
+        uint choiceId = RunManager.Instance.PlayerChoiceSynchronizer.ReserveChoiceId(base.Owner);
+        await choiceContext.SignalPlayerChoiceBegun(PlayerChoiceOptions.CancelPlayCardActions);
+        List<ulong> pausedOtherQueues = PauseOtherPlayerQueuesDuringSelection(base.Owner.NetId);
         try
         {
-            if (ShouldSelectLocalCard(selectingPlayer))
+            MegaCrit.Sts2.Core.Models.CardModel? selectedCard;
+            if (ShouldSelectLocalCard(base.Owner))
             {
-                NPlayerHand.Instance?.CancelAllCardPlay();
-                (SelectionOutcome localOutcome, MegaCrit.Sts2.Core.Models.CardModel? selectedCard) = await ChooseTeammateHandCardLocally(teammate, prefs);
+                if (CardSelectCmd.Selector != null)
+                {
+                    selectedCard = (await CardSelectCmd.Selector.GetSelectedCards(initialHandCards, prefs.MinSelect, prefs.MaxSelect)).FirstOrDefault();
+                }
+                else
+                {
+                    selectedCard = await SelectTeammateHandCardWithHandUi(teammate, initialHandCards, prefs);
+                }
+
                 RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(
-                    selectingPlayer,
+                    base.Owner,
                     choiceId,
                     PlayerChoiceResult.FromMutableCombatCards(selectedCard == null
                         ? Array.Empty<MegaCrit.Sts2.Core.Models.CardModel>()
                         : new[] { selectedCard }));
-                return (localOutcome, selectedCard);
+            }
+            else
+            {
+                selectedCard = (await RunManager.Instance.PlayerChoiceSynchronizer.WaitForRemoteChoice(base.Owner, choiceId))
+                    .AsCombatCards()
+                    .FirstOrDefault();
             }
 
-            MegaCrit.Sts2.Core.Models.CardModel? remoteSelectedCard = (await RunManager.Instance.PlayerChoiceSynchronizer.WaitForRemoteChoice(selectingPlayer, choiceId))
-                .AsCombatCards()
-                .FirstOrDefault();
+            MainFile.Logger.Info($"[DropHandkerchief] Returned from teammate hand select. selected={selectedCard?.Id.Entry ?? "null"}, action={DescribeCurrentAction()}");
+            if (selectedCard == null)
+            {
+                return !IsTeammateStillValid(teammate)
+                    ? (SelectionOutcome.TargetInvalid, null)
+                    : (SelectionOutcome.NoCard, null);
+            }
+
             return !IsTeammateStillValid(teammate)
                 ? (SelectionOutcome.TargetInvalid, null)
-                : (remoteSelectedCard == null ? SelectionOutcome.NoCard : SelectionOutcome.Selected, remoteSelectedCard);
+                : (SelectionOutcome.Selected, selectedCard);
         }
         finally
         {
-            await choiceContext.SignalPlayerChoiceEnded();
+            try
+            {
+                await choiceContext.SignalPlayerChoiceEnded();
+            }
+            finally
+            {
+                ResumePlayerQueues(pausedOtherQueues);
+            }
         }
     }
 
-    private async Task<(SelectionOutcome outcome, MegaCrit.Sts2.Core.Models.CardModel? selectedCard)> ChooseTeammateHandCardLocally(Player teammate, CardSelectorPrefs prefs)
+    private async Task<MegaCrit.Sts2.Core.Models.CardModel?> SelectTeammateHandCardWithHandUi(
+        Player teammate,
+        IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> teammateHandCards,
+        CardSelectorPrefs prefs)
     {
-        while (true)
+        NPlayerHand? handUi = NCombatRoom.Instance?.Ui?.Hand;
+        if (handUi == null)
         {
-            if (!IsTeammateStillValid(teammate))
+            return null;
+        }
+
+        handUi.CancelAllCardPlay();
+        List<MegaCrit.Sts2.Core.Models.CardModel> temporaryCards = new();
+        foreach (MegaCrit.Sts2.Core.Models.CardModel teammateCard in teammateHandCards)
+        {
+            if (handUi.GetCardHolder(teammateCard) != null)
             {
-                return (SelectionOutcome.TargetInvalid, null);
-            }
-
-            List<MegaCrit.Sts2.Core.Models.CardModel> teammateHandCards = PileType.Hand.GetPile(teammate).Cards.ToList();
-            if (teammateHandCards.Count == 0)
-            {
-                return (SelectionOutcome.NoCard, null);
-            }
-
-            if (CardSelectCmd.Selector != null)
-            {
-                MegaCrit.Sts2.Core.Models.CardModel? selectedFromSelector = (await CardSelectCmd.Selector.GetSelectedCards(teammateHandCards, prefs.MinSelect, prefs.MaxSelect)).FirstOrDefault();
-                if (selectedFromSelector == null)
-                {
-                    return !IsTeammateStillValid(teammate)
-                        ? (SelectionOutcome.TargetInvalid, null)
-                        : (SelectionOutcome.NoCard, null);
-                }
-
-                if (HasMatchingHandSnapshot(teammate, teammateHandCards) && IsCardStillInTeammateHand(selectedFromSelector, teammate))
-                {
-                    return (SelectionOutcome.Selected, selectedFromSelector);
-                }
-
-                MainFile.Logger.Info($"[DropHandkerchief] Teammate hand changed while selector was active. Refreshing selection for player {teammate.NetId}.");
                 continue;
             }
 
-            (SelectionOutcome outcome, bool shouldRefresh, MegaCrit.Sts2.Core.Models.CardModel? selectedCard) = await ShowLiveRefreshingSelectionScreen(teammate, teammateHandCards, prefs);
-            if (outcome == SelectionOutcome.TargetInvalid)
-            {
-                return (SelectionOutcome.TargetInvalid, null);
-            }
-
-            if (!shouldRefresh)
-            {
-                return (selectedCard == null ? SelectionOutcome.NoCard : SelectionOutcome.Selected, selectedCard);
-            }
-
-            MainFile.Logger.Info($"[DropHandkerchief] Teammate hand changed while selecting. Refreshing selection for player {teammate.NetId}.");
-            await WaitForNextProcessFrame();
-        }
-    }
-
-    private async Task<(SelectionOutcome outcome, bool shouldRefresh, MegaCrit.Sts2.Core.Models.CardModel? selectedCard)> ShowLiveRefreshingSelectionScreen(
-        Player teammate,
-        IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> snapshot,
-        CardSelectorPrefs prefs)
-    {
-        NOverlayStack? overlayStack = NOverlayStack.Instance;
-        if (overlayStack == null)
-        {
-            return (SelectionOutcome.NoCard, false, snapshot.FirstOrDefault());
-        }
-
-        NSimpleCardSelectScreen selectionScreen = NSimpleCardSelectScreen.Create(snapshot, prefs);
-        overlayStack.Push(selectionScreen);
-
-        Task<IEnumerable<MegaCrit.Sts2.Core.Models.CardModel>> selectionTask = selectionScreen.CardsSelected();
-        Task<SelectionOutcome> refreshTask = WaitForSelectionInvalidationAsync(selectionScreen, teammate, snapshot);
-        Task completedTask = await Task.WhenAny(selectionTask, refreshTask);
-
-        if (completedTask == selectionTask)
-        {
-            return (SelectionOutcome.Selected, false, (await selectionTask).FirstOrDefault());
-        }
-
-        SelectionOutcome refreshOutcome = await refreshTask;
-        if (selectionScreen.IsInsideTree())
-        {
-            overlayStack.Remove(selectionScreen);
+            handUi.Add(NCard.Create(teammateCard));
+            temporaryCards.Add(teammateCard);
         }
 
         try
         {
-            await selectionTask;
+            return (await handUi.SelectCards(
+                    prefs,
+                    card => temporaryCards.Contains(card) && IsCardStillInTeammateHand(card, teammate),
+                    this))
+                .FirstOrDefault();
         }
         catch (TaskCanceledException)
         {
+            return null;
         }
-
-        return (refreshOutcome, refreshOutcome == SelectionOutcome.Selected, null);
-    }
-
-    private static async Task<SelectionOutcome> WaitForSelectionInvalidationAsync(
-        NSimpleCardSelectScreen selectionScreen,
-        Player teammate,
-        IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> snapshot)
-    {
-        while (selectionScreen.IsInsideTree())
+        finally
         {
-            await selectionScreen.ToSignal(selectionScreen.GetTree(), SceneTree.SignalName.ProcessFrame);
-            if (!IsTeammateStillValid(teammate))
-            {
-                return SelectionOutcome.TargetInvalid;
-            }
-
-            if (!HasMatchingHandSnapshot(teammate, snapshot))
-            {
-                return SelectionOutcome.Selected;
-            }
+            CleanupTemporaryHandCards(handUi, temporaryCards);
         }
-
-        return SelectionOutcome.NoCard;
-    }
-
-    private static async Task WaitForNextProcessFrame()
-    {
-        SceneTree? tree = Engine.GetMainLoop() as SceneTree;
-        if (tree != null)
-        {
-            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-        }
-    }
-
-    private static bool ShouldSelectLocalCard(Player player)
-    {
-        return LocalContext.IsMe(player) && RunManager.Instance.NetService.Type != NetGameType.Replay;
     }
 
     private async Task CancelCurrentPlayAndReturnToHand(ResourceInfo resources)
@@ -317,6 +258,8 @@ public sealed class DropHandkerchief : CustomCardModel
             return false;
         }
 
+        CancelQueuedPlayIfNecessary(card);
+
         if (requireCurrentHandOwner != null && !IsCardStillInTeammateHand(card, requireCurrentHandOwner))
         {
             return false;
@@ -343,15 +286,94 @@ public sealed class DropHandkerchief : CustomCardModel
             && PileType.Hand.GetPile(teammate).Cards.Contains(card);
     }
 
-    private static bool HasMatchingHandSnapshot(Player teammate, IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> snapshot)
-    {
-        IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> currentCards = PileType.Hand.GetPile(teammate).Cards;
-        return currentCards.Count == snapshot.Count && currentCards.SequenceEqual(snapshot);
-    }
-
     private static bool IsTeammateStillValid(Player? teammate)
     {
         return teammate?.Creature != null && teammate.Creature.IsAlive;
+    }
+
+    private static bool ShouldSelectLocalCard(Player player)
+    {
+        return LocalContext.IsMe(player) && RunManager.Instance.NetService.Type != NetGameType.Replay;
+    }
+
+    private static string DescribeCurrentAction()
+    {
+        GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+        if (action == null)
+        {
+            return "null";
+        }
+
+        return $"{action.GetType().Name}(id={action.Id?.ToString() ?? "null"}, state={action.State}, owner={action.OwnerId})";
+    }
+
+    private static List<ulong> PauseOtherPlayerQueuesDuringSelection(ulong activePlayerId)
+    {
+        List<ulong> pausedPlayerIds = new();
+        foreach (object queue in GetActionQueues())
+        {
+            if (!TryGetQueueOwnerId(queue, out ulong ownerId) || ownerId == activePlayerId || IsQueuePaused(queue))
+            {
+                continue;
+            }
+
+            SetQueuePaused(queue, true);
+            pausedPlayerIds.Add(ownerId);
+        }
+
+        if (pausedPlayerIds.Count > 0)
+        {
+            MainFile.Logger.Info($"[DropHandkerchief] Paused other player queues during selection: {string.Join(",", pausedPlayerIds)}");
+        }
+
+        return pausedPlayerIds;
+    }
+
+    private static void ResumePlayerQueues(IEnumerable<ulong> playerIds)
+    {
+        HashSet<ulong> playerIdSet = playerIds.ToHashSet();
+        if (playerIdSet.Count == 0)
+        {
+            return;
+        }
+
+        foreach (object queue in GetActionQueues())
+        {
+            if (TryGetQueueOwnerId(queue, out ulong ownerId) && playerIdSet.Contains(ownerId))
+            {
+                SetQueuePaused(queue, false);
+            }
+        }
+
+        MainFile.Logger.Info($"[DropHandkerchief] Resumed paused player queues after selection: {string.Join(",", playerIdSet)}");
+    }
+
+    private static IEnumerable GetActionQueues()
+    {
+        return AccessTools.Field(typeof(ActionQueueSet), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) as IEnumerable
+            ?? Array.Empty<object>();
+    }
+
+    private static bool TryGetQueueOwnerId(object queue, out ulong ownerId)
+    {
+        if (AccessTools.Field(queue.GetType(), "ownerId")?.GetValue(queue) is ulong value)
+        {
+            ownerId = value;
+            return true;
+        }
+
+        ownerId = default;
+        return false;
+    }
+
+    private static bool IsQueuePaused(object queue)
+    {
+        return AccessTools.Field(queue.GetType(), "isPaused")?.GetValue(queue) as bool? ?? false;
+    }
+
+    private static void SetQueuePaused(object queue, bool paused)
+    {
+        AccessTools.Field(queue.GetType(), "isPaused")?.SetValue(queue, paused);
     }
 
     private static void RemoveCardVisual(MegaCrit.Sts2.Core.Models.CardModel card, CardPile? oldPile)
@@ -392,6 +414,56 @@ public sealed class DropHandkerchief : CustomCardModel
         card.RemoveFromCurrentPile();
         RemoveCardVisual(card, oldPile);
         combatState.RemoveCard(card);
+    }
+
+    private static void CancelQueuedPlayIfNecessary(MegaCrit.Sts2.Core.Models.CardModel card)
+    {
+        NCardPlayQueue? playQueue = NCombatRoom.Instance?.Ui?.PlayQueue;
+        if (playQueue?.GetCardNode(card) == null)
+        {
+            return;
+        }
+
+        PlayCardAction? queuedAction = GetQueuedPlayAction(card);
+        if (queuedAction == null)
+        {
+            MainFile.Logger.Info($"[DropHandkerchief] Selected card {card.Id.Entry} was queued but no PlayCardAction was found.");
+            return;
+        }
+
+        MainFile.Logger.Info($"[DropHandkerchief] Selected card {card.Id.Entry} was already queued by player {queuedAction.OwnerId}. Cancelling queued play before exchange.");
+        queuedAction.Cancel();
+    }
+
+    private static PlayCardAction? GetQueuedPlayAction(MegaCrit.Sts2.Core.Models.CardModel card)
+    {
+        IEnumerable queueItems = AccessTools.Field(typeof(NCardPlayQueue), "_playQueue")?.GetValue(NCombatRoom.Instance?.Ui?.PlayQueue) as IEnumerable
+            ?? Array.Empty<object>();
+
+        foreach (object queueItem in queueItems)
+        {
+            if (AccessTools.Field(queueItem.GetType(), "card")?.GetValue(queueItem) is not NCard queuedCard || queuedCard.Model != card)
+            {
+                continue;
+            }
+
+            return AccessTools.Field(queueItem.GetType(), "action")?.GetValue(queueItem) as PlayCardAction;
+        }
+
+        return null;
+    }
+
+    private static void CleanupTemporaryHandCards(NPlayerHand handUi, IEnumerable<MegaCrit.Sts2.Core.Models.CardModel> temporaryCards)
+    {
+        foreach (MegaCrit.Sts2.Core.Models.CardModel temporaryCard in temporaryCards)
+        {
+            if (handUi.GetCardHolder(temporaryCard) == null)
+            {
+                continue;
+            }
+
+            handUi.Remove(temporaryCard);
+        }
     }
 
     private bool HasAliveTeammateTarget()

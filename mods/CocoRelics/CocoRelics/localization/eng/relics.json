@@ -1,6 +1,6 @@
 {
   "COCORELICS-ZEDU_COCO.title": "Zedu Cocoa",
-  "COCORELICS-ZEDU_COCO.description": "Right-click to observe a room. Any room you observe becomes [red]fixed[/red].",
+  "COCORELICS-ZEDU_COCO.description": "Right-click to observe a room. Any room you observe becomes [red]fixed[/red]. Combines with Very Hot Cocoa into Big Meal.",
   "COCORELICS-ZEDU_COCO.flavor": "Schrodinger's cat",
   "COCORELICS-BIG_MEAL.title": "Big Meal",
   "COCORELICS-BIG_MEAL.description": "Gain [blue]{Energy:energyIcons()}[/blue] each turn. After {SurviveRounds} rounds, you die and this relic transfers to a teammate.",

@@ -24,7 +24,7 @@ namespace CocoRelics;
 [Pool(typeof(SharedRelicPool))]
 public sealed class BigMeal : CustomRelicModel
 {
-    private const string CustomIconPath = "res://CocoRelics/images/relics/pin_coco.png";
+    private const string CustomIconPath = "res://CocoRelics/images/relics/big_meal.jpg";
     private const string SurviveRoundsKey = "SurviveRounds";
 
     private bool _isActivating;
