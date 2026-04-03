@@ -72,7 +72,7 @@ public static class TutorialRewardPatches
         }
 
         HashSet<ModelId> usedIds = results.Select(result => result.Card.Id).ToHashSet();
-        CardModel? replacementCanonical = SelectRewardCandidate(results[index].Card.Rarity, usedIds);
+        CardModel? replacementCanonical = SelectRewardCandidate(usedIds);
         if (replacementCanonical == null)
         {
             return;
@@ -125,16 +125,14 @@ public static class TutorialRewardPatches
         return true;
     }
 
-    private static CardModel? SelectRewardCandidate(CardRarity replacedRarity, HashSet<ModelId> usedIds)
+    private static CardModel? SelectRewardCandidate(HashSet<ModelId> usedIds)
     {
-        IReadOnlyList<CardModel> candidates = MultiplayerCardConfigService.GetModColorlessCards();
-        IEnumerable<CardModel> filtered = candidates.Where(card => !usedIds.Contains(card.Id));
-        List<CardModel> matchingRarity = filtered.Where(card => card.Rarity == replacedRarity).ToList();
-        if (matchingRarity.Count > 0)
+        CardModel? configuredHighProbabilityCard = MultiplayerCardConfigService.GetConfiguredHighProbabilityRewardCard();
+        if (configuredHighProbabilityCard != null && !usedIds.Contains(configuredHighProbabilityCard.Id))
         {
-            return matchingRarity[0];
+            return configuredHighProbabilityCard;
         }
-
-        return filtered.FirstOrDefault() ?? candidates.FirstOrDefault();
+        
+        return null;
     }
 }

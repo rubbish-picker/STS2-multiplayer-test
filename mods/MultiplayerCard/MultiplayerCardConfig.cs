@@ -50,6 +50,9 @@ public sealed class MultiplayerCardRuntimeConfig
     [JsonPropertyName("high_probability_reward_chance")]
     public double HighProbabilityRewardChance { get; set; } = 0.25;
 
+    [JsonPropertyName("high_probability_reward_card")]
+    public string HighProbabilityRewardCard { get; set; } = "none";
+
     [JsonPropertyName("debug_forced_reward_card")]
     public string DebugForcedRewardCard { get; set; } = "none";
 }
@@ -258,7 +261,8 @@ public static class MultiplayerCardConfigService
             return false;
         }
 
-        return GetHighProbabilityRewardChance() > 0d;
+        return GetHighProbabilityRewardChance() > 0d
+            && GetHighProbabilityRewardCard() != MultiplayerCardDebugForcedCard.None;
     }
 
     public static bool ShouldForceDebugRewardCard(Player player, CardCreationOptions options)
@@ -315,6 +319,23 @@ public static class MultiplayerCardConfigService
     public static MultiplayerCardDebugForcedCard GetDebugForcedRewardCard()
     {
         return ParseDebugForcedRewardCard(GetEffectiveConfig().DebugForcedRewardCard);
+    }
+
+    public static MultiplayerCardDebugForcedCard GetHighProbabilityRewardCard()
+    {
+        return ParseDebugForcedRewardCard(GetEffectiveConfig().HighProbabilityRewardCard);
+    }
+
+    public static CardModel? GetConfiguredHighProbabilityRewardCard()
+    {
+        return GetHighProbabilityRewardCard() switch
+        {
+            MultiplayerCardDebugForcedCard.ZeroSum => ModelDb.Card<ZeroSum>(),
+            MultiplayerCardDebugForcedCard.YouSoSelfish => ModelDb.Card<YouSoSelfish>(),
+            MultiplayerCardDebugForcedCard.BorrowTeammateTime => ModelDb.Card<BorrowTeammateTime>(),
+            MultiplayerCardDebugForcedCard.DropHandkerchief => ModelDb.Card<DropHandkerchief>(),
+            _ => null,
+        };
     }
 
     public static CardModel? GetConfiguredDebugRewardCard()
@@ -443,6 +464,7 @@ public static class MultiplayerCardConfigService
             Mode = config.Mode,
             AppearanceMode = config.AppearanceMode,
             HighProbabilityRewardChance = config.HighProbabilityRewardChance,
+            HighProbabilityRewardCard = config.HighProbabilityRewardCard,
             DebugForcedRewardCard = config.DebugForcedRewardCard,
         };
     }
@@ -455,6 +477,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
         Mode = MultiplayerCardConfigService.ParseMode(source.Mode);
         AppearanceMode = MultiplayerCardConfigService.ParseAppearanceMode(source.AppearanceMode);
         HighProbabilityRewardChancePercent = Math.Clamp(source.HighProbabilityRewardChance * 100d, 0d, 100d);
+        HighProbabilityRewardCard = MultiplayerCardConfigService.ParseDebugForcedRewardCard(source.HighProbabilityRewardCard);
         DebugForcedRewardCard = MultiplayerCardConfigService.ParseDebugForcedRewardCard(source.DebugForcedRewardCard);
     }
 
@@ -468,6 +491,9 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
     [SliderRange(0, 100)]
     public static double HighProbabilityRewardChancePercent { get; set; } = 25d;
 
+    [ConfigSection("Spawn Frequency")]
+    public static MultiplayerCardDebugForcedCard HighProbabilityRewardCard { get; set; } = MultiplayerCardDebugForcedCard.None;
+
     [ConfigSection("Debug")]
     public static MultiplayerCardDebugForcedCard DebugForcedRewardCard { get; set; } = MultiplayerCardDebugForcedCard.None;
 
@@ -478,6 +504,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
             Mode = NormalizeMode(Mode),
             AppearanceMode = NormalizeAppearanceMode(AppearanceMode),
             HighProbabilityRewardChance = Math.Clamp(HighProbabilityRewardChancePercent / 100d, 0d, 1d),
+            HighProbabilityRewardCard = NormalizeDebugForcedRewardCard(HighProbabilityRewardCard),
             DebugForcedRewardCard = NormalizeDebugForcedRewardCard(DebugForcedRewardCard),
         };
     }

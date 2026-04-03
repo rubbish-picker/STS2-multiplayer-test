@@ -83,7 +83,7 @@ public static class CardDistributionPatches
             index = results.Count - 1;
         }
 
-        CardModel? canonicalCard = SelectRewardCandidate(results[index].Card.Rarity, usedIds);
+        CardModel? canonicalCard = SelectRewardCandidate(usedIds);
         if (canonicalCard == null)
         {
             __result = results;
@@ -138,16 +138,14 @@ public static class CardDistributionPatches
         return true;
     }
 
-    private static CardModel? SelectRewardCandidate(CardRarity replacedRarity, HashSet<ModelId> usedIds)
+    private static CardModel? SelectRewardCandidate(HashSet<ModelId> usedIds)
     {
-        IReadOnlyList<CardModel> candidates = MultiplayerCardConfigService.GetModColorlessCards();
-        IEnumerable<CardModel> filtered = candidates.Where(card => !usedIds.Contains(card.Id));
-        List<CardModel> matchingRarity = filtered.Where(card => card.Rarity == replacedRarity).ToList();
-        if (matchingRarity.Count > 0)
+        CardModel? configuredHighProbabilityCard = MultiplayerCardConfigService.GetConfiguredHighProbabilityRewardCard();
+        if (configuredHighProbabilityCard != null && !usedIds.Contains(configuredHighProbabilityCard.Id))
         {
-            return matchingRarity[0];
+            return configuredHighProbabilityCard;
         }
-
-        return filtered.FirstOrDefault() ?? candidates.FirstOrDefault();
+        
+        return null;
     }
 }
