@@ -35,7 +35,7 @@ public static class CocoRelicsRelicBiasService
 
         List<RelicModel> candidates = GetDesiredRelics(player)
             .Where(candidate => !blacklistIds.Contains(candidate.Id))
-            .Where(candidate => player.RelicGrabBag.Contains(candidate))
+            .Where(candidate => candidate.IsAllowed(player.RunState))
             .ToList();
         if (candidates.Count == 0)
         {
@@ -48,10 +48,15 @@ public static class CocoRelicsRelicBiasService
         }
 
         RelicModel candidate = candidates.Count == 1 ? candidates[0] : rng.NextItem(candidates)!;
-        player.RelicGrabBag.Remove(candidate);
-        player.RunState.SharedRelicGrabBag.Remove(candidate);
+        bool wasInGrabBag = player.RelicGrabBag.Contains(candidate);
+        if (wasInGrabBag)
+        {
+            player.RelicGrabBag.Remove(candidate);
+            player.RunState.SharedRelicGrabBag.Remove(candidate);
+        }
+
         relic = candidate;
-        MainFile.Logger.Info($"Biased relic pull for player {player.NetId}: {candidate.Id} (requested rarity={rarity}).");
+        MainFile.Logger.Info($"Biased relic pull for player {player.NetId}: {candidate.Id} (requested rarity={rarity}, from_grab_bag={wasInGrabBag}).");
         return true;
     }
 

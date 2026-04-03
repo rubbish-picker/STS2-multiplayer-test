@@ -64,7 +64,21 @@ function Remove-TestRunArtifacts {
 $existingProcesses = Get-Process -Name "SlayTheSpire2" -ErrorAction SilentlyContinue
 if ($existingProcesses) {
     Write-Host "Stopping existing SlayTheSpire2 instances..." -ForegroundColor Yellow
-    $existingProcesses | Stop-Process -Force
+    foreach ($process in $existingProcesses) {
+        try {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+        }
+        catch {
+            $isZombieLike = ($process.HandleCount -eq 0) -and [string]::IsNullOrWhiteSpace($process.Path)
+            if ($isZombieLike) {
+                Write-Warning "Skipping stale zombie-like SlayTheSpire2 process PID $($process.Id); Windows reports access denied but the process has no handles/path."
+                continue
+            }
+
+            Write-Warning "Failed to stop SlayTheSpire2 PID $($process.Id): $($_.Exception.Message)"
+            throw
+        }
+    }
     Start-Sleep -Milliseconds 1200
 }
 

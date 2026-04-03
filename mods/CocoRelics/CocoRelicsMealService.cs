@@ -13,27 +13,16 @@ namespace CocoRelics;
 public static class CocoRelicsMealService
 {
     private static readonly HashSet<ulong> BusyPlayers = new();
+    private static readonly HashSet<ulong> PendingPlayers = new();
 
     public static void TryQueueFusion(Player player)
     {
-        if (BusyPlayers.Contains(player.NetId))
+        if (BusyPlayers.Contains(player.NetId) || !PendingPlayers.Add(player.NetId))
         {
             return;
         }
 
-        if (player.GetRelic<BigMeal>() != null)
-        {
-            return;
-        }
-
-        ZeduCoco? zeduCoco = player.GetRelic<ZeduCoco>();
-        VeryHotCocoa? veryHotCocoa = player.GetRelic<VeryHotCocoa>();
-        if (zeduCoco == null || veryHotCocoa == null)
-        {
-            return;
-        }
-
-        TaskHelper.RunSafely(FuseIntoBigMealAsync(player, zeduCoco, veryHotCocoa));
+        TaskHelper.RunSafely(TryFuseDeferredAsync(player));
     }
 
     public static async Task TransferBigMealAsync(BigMeal meal, Player inheritor)
@@ -80,6 +69,32 @@ public static class CocoRelicsMealService
         finally
         {
             BusyPlayers.Remove(player.NetId);
+        }
+    }
+
+    private static async Task TryFuseDeferredAsync(Player player)
+    {
+        try
+        {
+            await Task.Yield();
+
+            if (player.GetRelic<BigMeal>() != null)
+            {
+                return;
+            }
+
+            ZeduCoco? zeduCoco = player.GetRelic<ZeduCoco>();
+            VeryHotCocoa? veryHotCocoa = player.GetRelic<VeryHotCocoa>();
+            if (zeduCoco == null || veryHotCocoa == null)
+            {
+                return;
+            }
+
+            await FuseIntoBigMealAsync(player, zeduCoco, veryHotCocoa);
+        }
+        finally
+        {
+            PendingPlayers.Remove(player.NetId);
         }
     }
 }

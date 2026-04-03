@@ -17,6 +17,8 @@ frontend/.env
 # Local machine paths (mod dev)
 local.props
 temp_mod_output/
+.temp_mods/
+.tmp_mods/
 ModTheSpire/bin/
 ModTheSpire/obj/
 
