@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Factories;
 
 namespace CocoRelics;
 
@@ -550,7 +551,8 @@ public static class CocoRelicsPatches
     [HarmonyPostfix]
     private static void GrantDebugRelicOnNewRun(RunManager __instance)
     {
-        if (!CocoRelicsConfigService.ShouldGrantDebugRelicAtRunStart())
+        CocoRelicsDebugRelicOption debugRelic = CocoRelicsConfigService.GetDebugRelicToGrantAtRunStart();
+        if (debugRelic == CocoRelicsDebugRelicOption.None)
         {
             return;
         }
@@ -563,16 +565,42 @@ public static class CocoRelicsPatches
 
         foreach (Player player in runState.Players)
         {
-            if (player.GetRelic<ZeduCoco>() != null)
+            RelicModel? relic = CreateConfiguredDebugRelic(debugRelic, player);
+            if (relic == null)
             {
                 continue;
             }
 
-            RelicModel relic = ModelDb.Relic<ZeduCoco>().ToMutable();
             relic.FloorAddedToDeck = 1;
             player.AddRelicInternal(relic);
             MainFile.Logger.Info($"Granted debug relic {relic.Id} to player {player.NetId}.");
         }
+    }
+
+    [HarmonyPatch(typeof(RelicFactory), nameof(RelicFactory.PullNextRelicFromFront), typeof(Player), typeof(RelicRarity))]
+    [HarmonyPrefix]
+    private static bool TryBiasRewardRelic(Player player, RelicRarity rarity, ref RelicModel __result)
+    {
+        if (!CocoRelicsRelicBiasService.TryPullBiasedRewardRelic(player, rarity, out RelicModel relic))
+        {
+            return true;
+        }
+
+        __result = relic;
+        return false;
+    }
+
+    [HarmonyPatch(typeof(RelicFactory), nameof(RelicFactory.PullNextRelicFromBack), typeof(Player), typeof(RelicRarity), typeof(System.Collections.Generic.IEnumerable<RelicModel>))]
+    [HarmonyPrefix]
+    private static bool TryBiasShopRelic(Player player, RelicRarity rarity, System.Collections.Generic.IEnumerable<RelicModel> blacklist, ref RelicModel __result)
+    {
+        if (!CocoRelicsRelicBiasService.TryPullBiasedShopRelic(player, rarity, blacklist, out RelicModel relic))
+        {
+            return true;
+        }
+
+        __result = relic;
+        return false;
     }
 
     private static TNode? FindAncestor<TNode>(Node? node) where TNode : Node
@@ -603,6 +631,16 @@ public static class CocoRelicsPatches
 
         coord = enteringCoord.Value;
         return CocoRelicsState.TryGet(coord, runState.CurrentActIndex, out info);
+    }
+
+    private static RelicModel? CreateConfiguredDebugRelic(CocoRelicsDebugRelicOption debugRelic, Player player)
+    {
+        return debugRelic switch
+        {
+            CocoRelicsDebugRelicOption.ZeduCoco when player.GetRelic<ZeduCoco>() == null => ModelDb.Relic<ZeduCoco>().ToMutable(),
+            CocoRelicsDebugRelicOption.BigMeal when player.GetRelic<BigMeal>() == null => ModelDb.Relic<BigMeal>().ToMutable(),
+            _ => null,
+        };
     }
 
     private static AbstractRoom CreateObservedRoom(ObservedRoomInfo info, RunState runState, MapPointType mapPointType)

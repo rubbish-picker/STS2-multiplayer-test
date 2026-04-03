@@ -149,7 +149,7 @@ public static class CocoRelicsMultiplayerSync
         }
 
         CocoRelicsConfigService.ApplyHostConfig(config);
-        MainFile.Logger.Info($"[CocoRelics] received host config from {senderId}: preview_path_mode={config.PreviewPathMode}.");
+        MainFile.Logger.Info($"[CocoRelics] received host config from {senderId}: mode={config.Mode} high_probability_bonus_chance={config.HighProbabilityBonusChance} preview_path_mode={config.PreviewPathMode} debug_start_relic={config.DebugStartRelic}.");
     }
 
     public static async Task<ObservedRoomInfo> GetOrRequestObservedRoomAsync(MapPoint point, RunState runState)

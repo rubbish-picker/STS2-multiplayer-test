@@ -11,7 +11,7 @@ public static class MultiplayerCardTargetingPatches
 {
     private static void Postfix(CardModel __instance, Creature? target, ref bool __result)
     {
-        if (__instance is not (ZeroSum or YouSoSelfish))
+        if (__instance is not (ZeroSum or YouSoSelfish or DropHandkerchief))
         {
             return;
         }

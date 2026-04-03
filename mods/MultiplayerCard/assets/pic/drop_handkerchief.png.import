@@ -3,7 +3,7 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://k5v2t8p1r4df"
-path="res://.godot/imported/drop_handkerchief.png-6c4381c1f4d54ea5a8a12012cc2be6d9.ctex"
+path="res://.godot/imported/drop_handkerchief.png-e17e160b73b106f30d0c378816947e58.ctex"
 metadata={
 "vram_texture": false
 }
@@ -11,7 +11,7 @@ metadata={
 [deps]
 
 source_file="res://assets/pic/drop_handkerchief.png"
-dest_files=["res://.godot/imported/drop_handkerchief.png-6c4381c1f4d54ea5a8a12012cc2be6d9.ctex"]
+dest_files=["res://.godot/imported/drop_handkerchief.png-e17e160b73b106f30d0c378816947e58.ctex"]
 
 [params]
 

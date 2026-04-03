@@ -36,6 +36,7 @@ public enum MultiplayerCardDebugForcedCard
     ZeroSum,
     YouSoSelfish,
     BorrowTeammateTime,
+    DropHandkerchief,
 }
 
 public sealed class MultiplayerCardRuntimeConfig
@@ -282,7 +283,7 @@ public static class MultiplayerCardConfigService
 
     public static bool IsOurColorlessCard(CardModel card)
     {
-        return card is ZeroSum or YouSoSelfish;
+        return card is ZeroSum or YouSoSelfish or DropHandkerchief;
     }
 
     public static bool IsOurNecrobinderCard(CardModel card)
@@ -323,6 +324,7 @@ public static class MultiplayerCardConfigService
             MultiplayerCardDebugForcedCard.ZeroSum => ModelDb.Card<ZeroSum>(),
             MultiplayerCardDebugForcedCard.YouSoSelfish => ModelDb.Card<YouSoSelfish>(),
             MultiplayerCardDebugForcedCard.BorrowTeammateTime => ModelDb.Card<BorrowTeammateTime>(),
+            MultiplayerCardDebugForcedCard.DropHandkerchief => ModelDb.Card<DropHandkerchief>(),
             _ => null,
         };
     }
@@ -356,6 +358,7 @@ public static class MultiplayerCardConfigService
             "zero_sum" => MultiplayerCardDebugForcedCard.ZeroSum,
             "you_so_selfish" => MultiplayerCardDebugForcedCard.YouSoSelfish,
             "borrow_teammate_time" => MultiplayerCardDebugForcedCard.BorrowTeammateTime,
+            "drop_handkerchief" => MultiplayerCardDebugForcedCard.DropHandkerchief,
             _ => MultiplayerCardDebugForcedCard.None,
         };
     }
@@ -508,6 +511,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
             MultiplayerCardDebugForcedCard.ZeroSum => "zero_sum",
             MultiplayerCardDebugForcedCard.YouSoSelfish => "you_so_selfish",
             MultiplayerCardDebugForcedCard.BorrowTeammateTime => "borrow_teammate_time",
+            MultiplayerCardDebugForcedCard.DropHandkerchief => "drop_handkerchief",
             _ => "none",
         };
     }

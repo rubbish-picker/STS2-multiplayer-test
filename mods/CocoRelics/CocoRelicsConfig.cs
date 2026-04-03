@@ -17,13 +17,33 @@ public enum CocoRelicsPreviewPathMode
     Furthest,
 }
 
+public enum CocoRelicsMode
+{
+    Vanilla,
+    HighProbability,
+    Debug,
+}
+
+public enum CocoRelicsDebugRelicOption
+{
+    None,
+    ZeduCoco,
+    BigMeal,
+}
+
 public sealed class CocoRelicsRuntimeConfig
 {
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = "vanilla";
+
+    [JsonPropertyName("high_probability_bonus_chance")]
+    public int HighProbabilityBonusChance { get; set; } = 55;
+
     [JsonPropertyName("preview_path_mode")]
     public string PreviewPathMode { get; set; } = "nearest";
 
-    [JsonPropertyName("debug_grant_zedu_coco_at_run_start")]
-    public bool DebugGrantZeduCocoAtRunStart { get; set; }
+    [JsonPropertyName("debug_start_relic")]
+    public string DebugStartRelic { get; set; } = "none";
 }
 
 public static class CocoRelicsConfigService
@@ -107,12 +127,59 @@ public static class CocoRelicsConfigService
         return ParsePreviewPathMode(GetEffectiveConfig().PreviewPathMode);
     }
 
+    public static CocoRelicsMode GetMode()
+    {
+        return ParseMode(GetEffectiveConfig().Mode);
+    }
+
+    public static CocoRelicsDebugRelicOption GetDebugStartRelic()
+    {
+        return ParseDebugRelicOption(GetEffectiveConfig().DebugStartRelic);
+    }
+
+    public static float GetHighProbabilityBonusChance()
+    {
+        int percent = GetEffectiveConfig().HighProbabilityBonusChance;
+        percent = Math.Clamp(percent, 0, 100);
+        return percent / 100f;
+    }
+
+    public static bool IsHighProbabilityMode()
+    {
+        return GetMode() == CocoRelicsMode.HighProbability;
+    }
+
+    public static bool IsDebugMode()
+    {
+        return GetMode() == CocoRelicsMode.Debug;
+    }
+
     public static CocoRelicsPreviewPathMode ParsePreviewPathMode(string? raw)
     {
         return raw?.Trim().ToLowerInvariant() switch
         {
             "furthest" => CocoRelicsPreviewPathMode.Furthest,
             _ => CocoRelicsPreviewPathMode.Nearest,
+        };
+    }
+
+    public static CocoRelicsMode ParseMode(string? raw)
+    {
+        return raw?.Trim().ToLowerInvariant() switch
+        {
+            "high_probability" => CocoRelicsMode.HighProbability,
+            "debug" => CocoRelicsMode.Debug,
+            _ => CocoRelicsMode.Vanilla,
+        };
+    }
+
+    public static CocoRelicsDebugRelicOption ParseDebugRelicOption(string? raw)
+    {
+        return raw?.Trim().ToLowerInvariant() switch
+        {
+            "zedu_coco" => CocoRelicsDebugRelicOption.ZeduCoco,
+            "big_meal" => CocoRelicsDebugRelicOption.BigMeal,
+            _ => CocoRelicsDebugRelicOption.None,
         };
     }
 
@@ -175,9 +242,9 @@ public static class CocoRelicsConfigService
         }
     }
 
-    public static bool ShouldGrantDebugRelicAtRunStart()
+    public static CocoRelicsDebugRelicOption GetDebugRelicToGrantAtRunStart()
     {
-        return GetEffectiveConfig().DebugGrantZeduCocoAtRunStart;
+        return GetMode() == CocoRelicsMode.Debug ? GetDebugStartRelic() : CocoRelicsDebugRelicOption.None;
     }
 
     private static void InitializeUiConfig()
@@ -260,8 +327,10 @@ public static class CocoRelicsConfigService
     {
         return new CocoRelicsRuntimeConfig
         {
+            Mode = config.Mode,
+            HighProbabilityBonusChance = config.HighProbabilityBonusChance,
             PreviewPathMode = config.PreviewPathMode,
-            DebugGrantZeduCocoAtRunStart = config.DebugGrantZeduCocoAtRunStart,
+            DebugStartRelic = config.DebugStartRelic,
         };
     }
 }
@@ -270,22 +339,43 @@ public sealed class CocoRelicsModConfig : SimpleModConfig
 {
     public CocoRelicsModConfig(CocoRelicsRuntimeConfig source)
     {
+        Mode = CocoRelicsConfigService.ParseMode(source.Mode);
+        HighProbabilityBonusChance = Math.Clamp(source.HighProbabilityBonusChance, 0, 100);
         PreviewPathMode = CocoRelicsConfigService.ParsePreviewPathMode(source.PreviewPathMode);
-        DebugGrantZeduCocoAtRunStart = source.DebugGrantZeduCocoAtRunStart;
+        DebugStartRelic = CocoRelicsConfigService.ParseDebugRelicOption(source.DebugStartRelic);
     }
+
+    [ConfigSection("General")]
+    public static CocoRelicsMode Mode { get; set; } = CocoRelicsMode.Vanilla;
+
+    [ConfigSection("General")]
+    [SliderRange(0, 100)]
+    public static double HighProbabilityBonusChance { get; set; } = 55d;
 
     [ConfigSection("Preview")]
     public static CocoRelicsPreviewPathMode PreviewPathMode { get; set; } = CocoRelicsPreviewPathMode.Nearest;
 
     [ConfigSection("Debug")]
-    public static bool DebugGrantZeduCocoAtRunStart { get; set; }
+    public static CocoRelicsDebugRelicOption DebugStartRelic { get; set; } = CocoRelicsDebugRelicOption.None;
 
     public CocoRelicsRuntimeConfig ToRuntimeConfig()
     {
         return new CocoRelicsRuntimeConfig
         {
+            Mode = NormalizeMode(Mode),
+            HighProbabilityBonusChance = Math.Clamp((int)Math.Round(HighProbabilityBonusChance), 0, 100),
             PreviewPathMode = NormalizePreviewPathMode(PreviewPathMode),
-            DebugGrantZeduCocoAtRunStart = DebugGrantZeduCocoAtRunStart,
+            DebugStartRelic = NormalizeDebugRelic(DebugStartRelic),
+        };
+    }
+
+    private static string NormalizeMode(CocoRelicsMode mode)
+    {
+        return mode switch
+        {
+            CocoRelicsMode.HighProbability => "high_probability",
+            CocoRelicsMode.Debug => "debug",
+            _ => "vanilla",
         };
     }
 
@@ -295,6 +385,16 @@ public sealed class CocoRelicsModConfig : SimpleModConfig
         {
             CocoRelicsPreviewPathMode.Furthest => "furthest",
             _ => "nearest",
+        };
+    }
+
+    private static string NormalizeDebugRelic(CocoRelicsDebugRelicOption option)
+    {
+        return option switch
+        {
+            CocoRelicsDebugRelicOption.ZeduCoco => "zedu_coco",
+            CocoRelicsDebugRelicOption.BigMeal => "big_meal",
+            _ => "none",
         };
     }
 }

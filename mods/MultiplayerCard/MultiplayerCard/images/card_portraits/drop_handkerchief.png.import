@@ -2,8 +2,8 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://0u4r7c1d9hkp"
-path="res://.godot/imported/drop_handkerchief.png-1f4e02f3d8a94d7a8c59f2eeaf0129b1.ctex"
+uid="uid://0u4r7c1eahkp"
+path="res://.godot/imported/drop_handkerchief.png-7daf77dd935ce919bdb5e95e99cbc6a7.ctex"
 metadata={
 "vram_texture": false
 }
@@ -11,7 +11,7 @@ metadata={
 [deps]
 
 source_file="res://MultiplayerCard/images/card_portraits/drop_handkerchief.png"
-dest_files=["res://.godot/imported/drop_handkerchief.png-1f4e02f3d8a94d7a8c59f2eeaf0129b1.ctex"]
+dest_files=["res://.godot/imported/drop_handkerchief.png-7daf77dd935ce919bdb5e95e99cbc6a7.ctex"]
 
 [params]
 
