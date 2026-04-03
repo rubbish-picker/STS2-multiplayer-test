@@ -190,7 +190,6 @@ public partial class CocoPreviewOverlay : Control
             PrepareHostedPreview(previewContent);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             FinalizeNativePreview(previewContent, runState);
-            HidePreviewPlayerVisuals(previewContent);
             HidePreviewNavigation(previewContent);
             _closeButton.Visible = _backButton == null;
             DisableInteractionsRecursively(previewContent, null);
@@ -456,39 +455,6 @@ public partial class CocoPreviewOverlay : Control
         {
             DisableInteractionsRecursively(child, allowedControl);
         }
-    }
-
-    private static void HidePreviewPlayerVisuals(Node node)
-    {
-        if (node is not NCombatRoom combatRoom)
-        {
-            return;
-        }
-
-        if (combatRoom.GetNodeOrNull<Control>("%AllyContainer") is { } allyContainer)
-        {
-            allyContainer.Visible = false;
-        }
-
-        if (combatRoom.GetNodeOrNull<Control>("%EnemyContainer") is { } enemyContainer)
-        {
-            enemyContainer.Visible = true;
-        }
-
-        foreach (var creatureNode in combatRoom.CreatureNodes)
-        {
-            if (creatureNode.Entity.IsPlayer || creatureNode.Entity.PetOwner != null)
-            {
-                creatureNode.Visible = false;
-            }
-            else
-            {
-                creatureNode.Visible = true;
-            }
-        }
-
-        int enemyCount = combatRoom.CreatureNodes.Count(node => node.Entity.IsEnemy);
-        MainFile.Logger.Info($"[CocoRelics] combat preview finalize: creatureNodes={combatRoom.CreatureNodes.Count()} enemyNodes={enemyCount}.");
     }
 
     private static void FinalizeNativePreview(Control previewContent, RunState runState)

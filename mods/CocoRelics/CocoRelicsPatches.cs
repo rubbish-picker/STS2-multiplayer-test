@@ -297,6 +297,27 @@ public static class CocoRelicsPatches
         CocoRelicsState.Clear();
     }
 
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.GenerateMap))]
+    [HarmonyPostfix]
+    private static void LoadObservedSessionOnMapGeneration()
+    {
+        RunState? runState = CocoRelicsState.GetRunState();
+        if (runState == null)
+        {
+            return;
+        }
+
+        CocoRelicsState.LoadPersistedSession(runState);
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.OnEnded))]
+    [HarmonyPrefix]
+    private static void ClearObservedSessionOnRunEnded()
+    {
+        CocoRelicsState.Clear();
+        CocoRelicsStorage.ClearCurrentSession();
+    }
+
     [HarmonyPatch(typeof(NCombatRoom), "UpdateCreatureNavigation")]
     [HarmonyPrefix]
     private static bool FixDetachedPreviewCombatNavigation(NCombatRoom __instance)

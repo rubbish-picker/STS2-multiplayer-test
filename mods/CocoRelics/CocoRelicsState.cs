@@ -34,6 +34,8 @@ public sealed class ObservedRoomInfo
     public MerchantInventory? ShopInventory { get; init; }
 
     public ObservedTreasurePreview? TreasurePreview { get; init; }
+
+    public CocoObservedRunSnapshot? SnapshotAfterPoint { get; init; }
 }
 
 public sealed class ObservedTreasurePreview
@@ -72,6 +74,26 @@ public static class CocoRelicsState
         ObservedRooms.Clear();
     }
 
+    public static IReadOnlyDictionary<ObservedRoomKey, ObservedRoomInfo> GetObservedRooms()
+    {
+        return ObservedRooms;
+    }
+
+    public static void LoadPersistedSession(RunState runState)
+    {
+        ObservedRooms.Clear();
+        CocoObservedSessionSave? save = CocoRelicsStorage.LoadCurrentSession(runState);
+        if (save == null)
+        {
+            return;
+        }
+
+        foreach (CocoObservedRoomInfoSave roomSave in save.ObservedRooms.Where(room => room.ActIndex == runState.CurrentActIndex))
+        {
+            ObservedRooms[new ObservedRoomKey(roomSave.ActIndex, roomSave.Coord)] = CocoRelicsStorage.FromSave(roomSave, runState);
+        }
+    }
+
     public static bool HasPreviewRelic(IRunState? runState)
     {
         if (runState == null)
@@ -97,16 +119,35 @@ public static class CocoRelicsState
 
         ObservedRoomInfo observed = await ObservePointAsync(point, runState);
         ObservedRooms[key] = observed;
+        CocoRelicsStorage.SaveCurrentSession(runState, ObservedRooms);
         return observed;
     }
 
     private static async Task<ObservedRoomInfo> ObservePointAsync(MapPoint point, RunState runState)
     {
+        int actIndex = runState.CurrentActIndex;
         RunState observedRunState = CloneRunState(runState);
         ObservedRoomInfo? lastObserved = null;
         foreach (MapPoint simulatedPoint in GetPathFromCurrentPoint(observedRunState, point))
         {
-            lastObserved = await ObserveSimulatedPointAsync(simulatedPoint, observedRunState, runState);
+            ObservedRoomKey key = new(actIndex, simulatedPoint.coord);
+            if (ObservedRooms.TryGetValue(key, out ObservedRoomInfo? existing))
+            {
+                lastObserved = existing;
+                if (existing.SnapshotAfterPoint != null)
+                {
+                    observedRunState = CocoRelicsStorage.RestoreSnapshot(existing.SnapshotAfterPoint, runState);
+                }
+                else
+                {
+                    observedRunState = ApplyObservedPointToSimulation(simulatedPoint, existing, observedRunState);
+                }
+
+                continue;
+            }
+
+            lastObserved = await ObserveSimulatedPointAsync(simulatedPoint, observedRunState);
+            ObservedRooms[key] = lastObserved;
         }
 
         return lastObserved ?? new ObservedRoomInfo
@@ -115,7 +156,7 @@ public static class CocoRelicsState
         };
     }
 
-    private static async Task<ObservedRoomInfo> ObserveSimulatedPointAsync(MapPoint point, RunState observedRunState, RunState sourceRunState)
+    private static async Task<ObservedRoomInfo> ObserveSimulatedPointAsync(MapPoint point, RunState observedRunState)
     {
         observedRunState.AddVisitedMapCoord(point.coord);
         RoomType roomType = ResolveRoomType(point, observedRunState);
@@ -131,8 +172,8 @@ public static class CocoRelicsState
         observedRunState.AppendToMapPointHistory(point.PointType, roomType, modelId);
         observedRunState.Act.MarkRoomVisited(roomType);
 
-        MerchantInventory? shopInventory = roomType == RoomType.Shop ? ObserveShop(sourceRunState) : null;
-        ObservedTreasurePreview? treasurePreview = roomType == RoomType.Treasure ? await ObserveTreasureAsync(sourceRunState) : null;
+        MerchantInventory? shopInventory = roomType == RoomType.Shop ? ObserveShop(observedRunState) : null;
+        ObservedTreasurePreview? treasurePreview = roomType == RoomType.Treasure ? await ObserveTreasureAsync(observedRunState) : null;
 
         return new ObservedRoomInfo
         {
@@ -140,7 +181,36 @@ public static class CocoRelicsState
             ModelId = modelId,
             ShopInventory = shopInventory,
             TreasurePreview = treasurePreview,
+            SnapshotAfterPoint = CocoRelicsStorage.CaptureSnapshot(observedRunState),
         };
+    }
+
+    private static RunState ApplyObservedPointToSimulation(MapPoint point, ObservedRoomInfo info, RunState observedRunState)
+    {
+        observedRunState.AddVisitedMapCoord(point.coord);
+
+        switch (info.RoomType)
+        {
+            case RoomType.Monster:
+            case RoomType.Elite:
+            case RoomType.Boss:
+                observedRunState.Act.PullNextEncounter(info.RoomType);
+                break;
+            case RoomType.Event:
+                if (point.PointType == MapPointType.Ancient)
+                {
+                    observedRunState.Act.PullAncient();
+                }
+                else
+                {
+                    observedRunState.Act.PullNextEvent(observedRunState);
+                }
+                break;
+        }
+
+        observedRunState.AppendToMapPointHistory(point.PointType, info.RoomType, info.ModelId);
+        observedRunState.Act.MarkRoomVisited(info.RoomType);
+        return observedRunState;
     }
 
     private static MerchantInventory ObserveShop(RunState runState)
@@ -242,7 +312,9 @@ public static class CocoRelicsState
     private static RunState CloneRunState(RunState runState)
     {
         SerializableRun save = RunManager.Instance.ToSave(null);
-        return RunState.FromSerializable(save);
+        RunState cloned = RunState.FromSerializable(save);
+        cloned.Map = runState.Map;
+        return cloned;
     }
 
     private static IReadOnlyList<MapPoint> GetPathFromCurrentPoint(RunState runState, MapPoint targetPoint)
