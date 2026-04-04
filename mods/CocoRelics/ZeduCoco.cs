@@ -1,8 +1,10 @@
+using System.Collections.Generic;
 using BaseLib.Abstracts;
 using BaseLib;
 using BaseLib.Utils;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Models.RelicPools;
 
 namespace CocoRelics;
@@ -19,4 +21,6 @@ public sealed class ZeduCoco : CustomRelicModel
     protected override string PackedIconOutlinePath => CustomIconPath;
 
     protected override string BigIconPath => CustomIconPath;
+
+    protected override IEnumerable<IHoverTip> ExtraHoverTips => HoverTipFactory.FromRelic<BigMeal>();
 }

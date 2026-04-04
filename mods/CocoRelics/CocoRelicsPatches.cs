@@ -23,6 +23,7 @@ using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Factories;
+using MegaCrit.Sts2.Core.Models.Relics;
 
 namespace CocoRelics;
 
@@ -601,6 +602,18 @@ public static class CocoRelicsPatches
 
         __result = relic;
         return false;
+    }
+
+    [HarmonyPatch(typeof(MerchantRelicEntry), nameof(MerchantRelicEntry.CalcCost))]
+    [HarmonyPostfix]
+    private static void CapCocoRelicMerchantCost(MerchantRelicEntry __instance)
+    {
+        if (__instance.Model is not ZeduCoco && __instance.Model is not VeryHotCocoa)
+        {
+            return;
+        }
+
+        AccessTools.Field(typeof(MerchantEntry), "_cost").SetValue(__instance, System.Math.Min(__instance.Cost, 200));
     }
 
     private static TNode? FindAncestor<TNode>(Node? node) where TNode : Node
