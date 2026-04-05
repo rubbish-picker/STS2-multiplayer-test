@@ -1,8 +1,8 @@
 {
   "MULTIPLAYERCARD-FRIEND_FEE_POWER.title": "Friend Fee",
-  "MULTIPLAYERCARD-FRIEND_FEE_POWER.description": "After combat, this modifies the current combat Gold reward in one unified settlement.",
-  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "After combat, this modifies the current combat Gold reward in one unified settlement.",
+  "MULTIPLAYERCARD-FRIEND_FEE_POWER.description": "All teammates gain 25% less [gold]Gold[/gold] this run.\nYou gain additional [gold]Gold[/gold] equal to 2 times the reduced amount.",
+  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "All teammates gain 25% less [gold]Gold[/gold] this run.\nYou gain additional [gold]Gold[/gold] equal to 2 times the reduced amount.",
   "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.title": "Friend Fee+",
-  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.description": "After combat, this modifies the current combat Gold reward in one unified settlement. This version uses 50% loss and triple payout.",
-  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.smartDescription": "After combat, this modifies the current combat Gold reward in one unified settlement. This version uses 50% loss and triple payout."
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.description": "All teammates gain 50% less [gold]Gold[/gold] this run.\nYou gain additional [gold]Gold[/gold] equal to 3 times the reduced amount.",
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.smartDescription": "All teammates gain 50% less [gold]Gold[/gold] this run.\nYou gain additional [gold]Gold[/gold] equal to 3 times the reduced amount."
 }

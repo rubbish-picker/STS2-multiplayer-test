@@ -1,8 +1,8 @@
 {
   "MULTIPLAYERCARD-FRIEND_FEE_POWER.title": "朋友费",
-  "MULTIPLAYERCARD-FRIEND_FEE_POWER.description": "战斗结束后，统一按所有持有者结算本场金币奖励。",
-  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "战斗结束后，统一按所有持有者结算本场金币奖励。",
+  "MULTIPLAYERCARD-FRIEND_FEE_POWER.description": "所有队友本局获得金币减少25%。\n你多获得2倍减少量的金币。",
+  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "所有队友本局获得金币减少25%。\n你多获得2倍减少量的金币。",
   "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.title": "朋友费+",
-  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.description": "战斗结束后，统一按所有持有者结算本场金币奖励。此能力按50%扣减并按3倍返利。",
-  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.smartDescription": "战斗结束后，统一按所有持有者结算本场金币奖励。此能力按50%扣减并按3倍返利。"
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.description": "所有队友本局获得金币减少50%。\n你多获得3倍减少量的金币。",
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.smartDescription": "所有队友本局获得金币减少50%。\n你多获得3倍减少量的金币。"
 }
