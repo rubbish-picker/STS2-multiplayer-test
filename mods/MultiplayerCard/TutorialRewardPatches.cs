@@ -54,7 +54,7 @@ public static class TutorialRewardPatches
             return;
         }
 
-        if (results.Any(result => MultiplayerCardConfigService.IsOurColorlessCard(result.Card)))
+        if (results.Any(result => MultiplayerCardConfigService.IsOurCard(result.Card)))
         {
             return;
         }

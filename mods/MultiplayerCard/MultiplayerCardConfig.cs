@@ -37,6 +37,7 @@ public enum MultiplayerCardDebugForcedCard
     YouSoSelfish,
     BorrowTeammateTime,
     DropHandkerchief,
+    FriendFee,
 }
 
 public sealed class MultiplayerCardRuntimeConfig
@@ -295,9 +296,14 @@ public static class MultiplayerCardConfigService
         return card is BorrowTeammateTime;
     }
 
+    public static bool IsOurRegentCard(CardModel card)
+    {
+        return card is FriendFee;
+    }
+
     public static bool IsOurCard(CardModel card)
     {
-        return IsOurColorlessCard(card) || IsOurNecrobinderCard(card);
+        return IsOurColorlessCard(card) || IsOurNecrobinderCard(card) || IsOurRegentCard(card);
     }
 
     public static IReadOnlyList<CardModel> GetModColorlessCards()
@@ -313,6 +319,14 @@ public static class MultiplayerCardConfigService
         return ModelDb.CardPool<NecrobinderCardPool>()
             .AllCards
             .Where(IsOurNecrobinderCard)
+            .ToList();
+    }
+
+    public static IReadOnlyList<CardModel> GetModRegentCards()
+    {
+        return ModelDb.CardPool<RegentCardPool>()
+            .AllCards
+            .Where(IsOurRegentCard)
             .ToList();
     }
 
@@ -334,6 +348,7 @@ public static class MultiplayerCardConfigService
             MultiplayerCardDebugForcedCard.YouSoSelfish => ModelDb.Card<YouSoSelfish>(),
             MultiplayerCardDebugForcedCard.BorrowTeammateTime => ModelDb.Card<BorrowTeammateTime>(),
             MultiplayerCardDebugForcedCard.DropHandkerchief => ModelDb.Card<DropHandkerchief>(),
+            MultiplayerCardDebugForcedCard.FriendFee => ModelDb.Card<FriendFee>(),
             _ => null,
         };
     }
@@ -346,6 +361,7 @@ public static class MultiplayerCardConfigService
             MultiplayerCardDebugForcedCard.YouSoSelfish => ModelDb.Card<YouSoSelfish>(),
             MultiplayerCardDebugForcedCard.BorrowTeammateTime => ModelDb.Card<BorrowTeammateTime>(),
             MultiplayerCardDebugForcedCard.DropHandkerchief => ModelDb.Card<DropHandkerchief>(),
+            MultiplayerCardDebugForcedCard.FriendFee => ModelDb.Card<FriendFee>(),
             _ => null,
         };
     }
@@ -380,6 +396,7 @@ public static class MultiplayerCardConfigService
             "you_so_selfish" => MultiplayerCardDebugForcedCard.YouSoSelfish,
             "borrow_teammate_time" => MultiplayerCardDebugForcedCard.BorrowTeammateTime,
             "drop_handkerchief" => MultiplayerCardDebugForcedCard.DropHandkerchief,
+            "friend_fee" => MultiplayerCardDebugForcedCard.FriendFee,
             _ => MultiplayerCardDebugForcedCard.None,
         };
     }
@@ -539,6 +556,7 @@ public sealed class MultiplayerCardModConfig : SimpleModConfig
             MultiplayerCardDebugForcedCard.YouSoSelfish => "you_so_selfish",
             MultiplayerCardDebugForcedCard.BorrowTeammateTime => "borrow_teammate_time",
             MultiplayerCardDebugForcedCard.DropHandkerchief => "drop_handkerchief",
+            MultiplayerCardDebugForcedCard.FriendFee => "friend_fee",
             _ => "none",
         };
     }

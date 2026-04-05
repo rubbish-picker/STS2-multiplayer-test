@@ -65,7 +65,7 @@ public static class CardDistributionPatches
         double chance = MultiplayerCardConfigService.GetHighProbabilityRewardChance();
         HashSet<ModelId> usedIds = results.Select(result => result.Card.Id).ToHashSet();
 
-        if (results.Any(result => MultiplayerCardConfigService.IsOurColorlessCard(result.Card)))
+        if (results.Any(result => MultiplayerCardConfigService.IsOurCard(result.Card)))
         {
             __result = results;
             return;
