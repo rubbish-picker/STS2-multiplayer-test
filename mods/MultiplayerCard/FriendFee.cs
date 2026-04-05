@@ -34,6 +34,12 @@ public sealed class FriendFee : CustomCardModel
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
         await CreatureCmd.TriggerAnim(base.Owner.Creature, "Cast", base.Owner.Character.CastAnimDelay);
+        if (base.IsUpgraded)
+        {
+            await PowerCmd.Apply<FriendFeePlusPower>(base.Owner.Creature, 1, base.Owner.Creature, this);
+            return;
+        }
+
         await PowerCmd.Apply<FriendFeePower>(base.Owner.Creature, 1, base.Owner.Creature, this);
     }
 

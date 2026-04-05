@@ -9,5 +9,5 @@
   "MULTIPLAYERCARD-DROP_HANDKERCHIEF.description": "Choose a teammate.\nChoose 1 card in their hand.\nExchange that card with this card.",
   "MULTIPLAYERCARD-DROP_HANDKERCHIEF.selectionScreenPrompt": "Choose a teammate hand card to exchange.",
   "MULTIPLAYERCARD-FRIEND_FEE.title": "Friend Fee",
-  "MULTIPLAYERCARD-FRIEND_FEE.description": "After combat, resolve this combat's Gold reward for all players at once.\nFor each holder of this power targeting you, reduce your combat Gold reward by 25%.\nGain double the total Gold this card made other teammates lose."
+  "MULTIPLAYERCARD-FRIEND_FEE.description": "All teammates gain {IfUpgraded:show:50|25}% less [gold]Gold[/gold] this run.\nYou gain additional [gold]Gold[/gold] equal to {IfUpgraded:show:3|2} times the reduced amount."
 }

@@ -1,5 +1,8 @@
 {
   "MULTIPLAYERCARD-FRIEND_FEE_POWER.title": "Friend Fee",
   "MULTIPLAYERCARD-FRIEND_FEE_POWER.description": "After combat, this modifies the current combat Gold reward in one unified settlement.",
-  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "After combat, this modifies the current combat Gold reward in one unified settlement."
+  "MULTIPLAYERCARD-FRIEND_FEE_POWER.smartDescription": "After combat, this modifies the current combat Gold reward in one unified settlement.",
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.title": "Friend Fee+",
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.description": "After combat, this modifies the current combat Gold reward in one unified settlement. This version uses 50% loss and triple payout.",
+  "MULTIPLAYERCARD-FRIEND_FEE_PLUS_POWER.smartDescription": "After combat, this modifies the current combat Gold reward in one unified settlement. This version uses 50% loss and triple payout."
 }

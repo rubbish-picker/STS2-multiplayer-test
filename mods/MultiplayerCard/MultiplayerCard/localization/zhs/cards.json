@@ -9,5 +9,5 @@
   "MULTIPLAYERCARD-DROP_HANDKERCHIEF.description": "选择一名队友。\n选择其手牌中的1张牌。\n将该牌与此牌交换。",
   "MULTIPLAYERCARD-DROP_HANDKERCHIEF.selectionScreenPrompt": "选择1张要交换的队友手牌。",
   "MULTIPLAYERCARD-FRIEND_FEE.title": "朋友费",
-  "MULTIPLAYERCARD-FRIEND_FEE.description": "在战斗结束后统一结算本场[gold]金币[/gold]奖励。\n每有1个持有此能力的队友对象，你的本场[gold]金币[/gold]奖励减少25%。\n你获得自己令其他队友减少的[gold]金币[/gold]总量的2倍。"
+  "MULTIPLAYERCARD-FRIEND_FEE.description": "所有队友本局获得金币减少{IfUpgraded:show:50|25}%。\n你多获得{IfUpgraded:show:3|2}倍减少量的金币。"
 }

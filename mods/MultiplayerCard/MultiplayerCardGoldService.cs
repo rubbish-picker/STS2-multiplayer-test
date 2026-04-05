@@ -15,9 +15,10 @@ namespace MultiplayerCard;
 
 public static class MultiplayerCardGoldService
 {
-    private const int FriendFeeDividend = 1;
-    private const int FriendFeeDivisor = 4;
-    private const int FriendFeeBonusMultiplier = 2;
+    private const int BaseFriendFeeDivisor = 4;
+    private const int UpgradedFriendFeeDivisor = 2;
+    private const int BaseFriendFeeBonusMultiplier = 2;
+    private const int UpgradedFriendFeeBonusMultiplier = 3;
 
     private static readonly Dictionary<string, FriendFeeSnapshot> Snapshots = new();
 
@@ -29,21 +30,29 @@ public static class MultiplayerCardGoldService
             return;
         }
 
-        Dictionary<ulong, int> holderStacks = room.CombatState.Players
+        Dictionary<ulong, HolderPowerCounts> holderPowerCounts = room.CombatState.Players
             .Select(player => new
             {
                 player.NetId,
-                Power = player.Creature.GetPower<FriendFeePower>(),
+                BasePower = player.Creature.GetPower<FriendFeePower>(),
+                UpgradedPower = player.Creature.GetPower<FriendFeePlusPower>(),
             })
-            .Where(item => item.Power != null && item.Power.Amount > 0)
-            .ToDictionary(item => item.NetId, item => item.Power!.Amount);
+            .Select(item => new
+            {
+                item.NetId,
+                Counts = new HolderPowerCounts(
+                    item.BasePower?.Amount ?? 0,
+                    item.UpgradedPower?.Amount ?? 0),
+            })
+            .Where(item => item.Counts.BaseCount > 0 || item.Counts.UpgradedCount > 0)
+            .ToDictionary(item => item.NetId, item => item.Counts);
 
-        if (holderStacks.Count == 0)
+        if (holderPowerCounts.Count == 0)
         {
             return;
         }
 
-        Snapshots[key] = new FriendFeeSnapshot(holderStacks);
+        Snapshots[key] = new FriendFeeSnapshot(holderPowerCounts);
     }
 
     public static void RewriteRewardsForFriendFee(IEnumerable<Reward> rewards)
@@ -111,61 +120,29 @@ public static class MultiplayerCardGoldService
             ulong victimId = victimEntry.Key;
             int baseGold = victimEntry.Value;
 
-            List<KeyValuePair<ulong, int>> attackingHolders = snapshot.HolderStacks
-                .Where(entry => entry.Key != victimId && entry.Value > 0)
+            List<FeeApplication> applications = snapshot.HolderPowerCounts
+                .Where(entry => entry.Key != victimId)
                 .OrderBy(static entry => entry.Key)
+                .SelectMany(static entry => CreateApplications(entry.Key, entry.Value))
                 .ToList();
 
-            int totalTargetCount = attackingHolders.Sum(static entry => entry.Value);
-            if (baseGold <= 0 || totalTargetCount <= 0)
+            if (baseGold <= 0 || applications.Count == 0)
             {
                 continue;
             }
 
             int remainingGold = baseGold;
-            for (int i = 0; i < totalTargetCount; i++)
+            foreach (FeeApplication application in applications)
             {
-                int reduction = remainingGold / FriendFeeDivisor;
+                int reduction = remainingGold / application.Divisor;
                 if (reduction <= 0)
                 {
-                    break;
+                    continue;
                 }
 
                 remainingGold -= reduction;
-            }
-
-            int totalVictimLoss = baseGold - remainingGold;
-            if (totalVictimLoss <= 0)
-            {
-                continue;
-            }
-
-            victimLossByPlayer[victimId] += totalVictimLoss;
-
-            int assignedLoss = 0;
-            List<HolderShare> holderShares = attackingHolders
-                .Select(entry =>
-                {
-                    int wholeShare = totalVictimLoss * entry.Value / totalTargetCount;
-                    int remainder = totalVictimLoss * entry.Value % totalTargetCount;
-                    assignedLoss += wholeShare;
-
-                    return new HolderShare(entry.Key, wholeShare, remainder);
-                })
-                .OrderByDescending(static share => share.Remainder)
-                .ThenBy(static share => share.HolderId)
-                .ToList();
-
-            int leftover = totalVictimLoss - assignedLoss;
-            for (int i = 0; i < leftover; i++)
-            {
-                HolderShare share = holderShares[i];
-                holderShares[i] = share with { WholeShare = share.WholeShare + 1 };
-            }
-
-            foreach (HolderShare share in holderShares)
-            {
-                holderGainByPlayer[share.HolderId] += share.WholeShare * FriendFeeBonusMultiplier;
+                victimLossByPlayer[victimId] += reduction;
+                holderGainByPlayer[application.HolderId] += reduction * application.BonusMultiplier;
             }
         }
 
@@ -209,12 +186,12 @@ public static class MultiplayerCardGoldService
     {
         private readonly HashSet<ulong> _adjustedPlayers = new();
 
-        public FriendFeeSnapshot(Dictionary<ulong, int> holderStacks)
+        public FriendFeeSnapshot(Dictionary<ulong, HolderPowerCounts> holderPowerCounts)
         {
-            HolderStacks = holderStacks;
+            HolderPowerCounts = holderPowerCounts;
         }
 
-        public Dictionary<ulong, int> HolderStacks { get; }
+        public Dictionary<ulong, HolderPowerCounts> HolderPowerCounts { get; }
 
         public bool MarkAdjusted(ulong playerId)
         {
@@ -222,8 +199,21 @@ public static class MultiplayerCardGoldService
         }
     }
 
-    private readonly record struct HolderShare(ulong HolderId, int WholeShare, int Remainder);
+    private static IEnumerable<FeeApplication> CreateApplications(ulong holderId, HolderPowerCounts counts)
+    {
+        for (int i = 0; i < counts.BaseCount; i++)
+        {
+            yield return new FeeApplication(holderId, BaseFriendFeeDivisor, BaseFriendFeeBonusMultiplier, false, i);
+        }
 
+        for (int i = 0; i < counts.UpgradedCount; i++)
+        {
+            yield return new FeeApplication(holderId, UpgradedFriendFeeDivisor, UpgradedFriendFeeBonusMultiplier, true, i);
+        }
+    }
+
+    private readonly record struct HolderPowerCounts(int BaseCount, int UpgradedCount);
+    private readonly record struct FeeApplication(ulong HolderId, int Divisor, int BonusMultiplier, bool IsUpgraded, int Sequence);
     private readonly record struct FriendFeeResolution(int FinalGold, int VictimLoss, int HolderGain);
 }
 
