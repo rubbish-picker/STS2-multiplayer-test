@@ -466,10 +466,28 @@ public static class CocoRelicsPatches
     }
 
     [HarmonyPatch(typeof(Player), nameof(Player.AddRelicInternal))]
-    [HarmonyPostfix]
-    private static void TryFuseMealRelic(Player __instance)
+    [HarmonyPrefix]
+    private static bool PreventDuplicateCocoRelics(Player __instance, RelicModel relic)
     {
-        CocoRelicsMealService.TryQueueFusion(__instance);
+        if (relic is not ZeduCoco && relic is not BigMeal)
+        {
+            return true;
+        }
+
+        if (__instance.Relics.Any(existing => existing.Id == relic.Id))
+        {
+            MainFile.Logger.Warn($"Skipped duplicate coco relic add for player {__instance.NetId}: {relic.Id}.");
+            return false;
+        }
+
+        return true;
+    }
+
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.RelicCmd), nameof(MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain), typeof(RelicModel), typeof(Player), typeof(int))]
+    [HarmonyPostfix]
+    private static void TryFuseMealRelic(RelicModel relic, Player player)
+    {
+        CocoRelicsMealService.TryQueueFusion(player, relic);
     }
 
     [HarmonyPatch(typeof(NCombatRoom), "UpdateCreatureNavigation")]

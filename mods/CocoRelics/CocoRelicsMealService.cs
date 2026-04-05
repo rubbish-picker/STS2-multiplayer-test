@@ -15,8 +15,14 @@ public static class CocoRelicsMealService
     private static readonly HashSet<ulong> BusyPlayers = new();
     private static readonly HashSet<ulong> PendingPlayers = new();
 
-    public static void TryQueueFusion(Player player)
+    public static void TryQueueFusion(Player player, RelicModel? obtainedRelic = null)
     {
+        // Only real obtains of the fusion inputs should enqueue fusion work.
+        if (obtainedRelic is not null && obtainedRelic is not ZeduCoco && obtainedRelic is not VeryHotCocoa)
+        {
+            return;
+        }
+
         if (BusyPlayers.Contains(player.NetId) || !PendingPlayers.Add(player.NetId))
         {
             return;
