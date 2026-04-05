@@ -11,6 +11,7 @@ public static class MultiplayerCardRunCleanupPatches
     private static void AfterDeleteCurrentRun()
     {
         MultiplayerCardConfigService.ClearPersistedRunConfig(isMultiplayer: false);
+        MultiplayerCardGoldService.Clear();
     }
 
     [HarmonyPatch(typeof(SaveManager), nameof(SaveManager.DeleteCurrentMultiplayerRun))]
@@ -18,5 +19,6 @@ public static class MultiplayerCardRunCleanupPatches
     private static void AfterDeleteCurrentMultiplayerRun()
     {
         MultiplayerCardConfigService.ClearPersistedRunConfig(isMultiplayer: true);
+        MultiplayerCardGoldService.Clear();
     }
 }

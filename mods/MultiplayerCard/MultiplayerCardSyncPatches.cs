@@ -107,6 +107,7 @@ public static class MultiplayerCardSyncPatches
         {
             MultiplayerCardConfigService.ClearRunLockInMemory();
             MultiplayerCardMultiplayerSync.Clear();
+            MultiplayerCardGoldService.Clear();
         }
     }
 }
