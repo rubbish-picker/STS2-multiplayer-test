@@ -41,6 +41,7 @@ public static class BetaDirectConnectPatches
 {
     private static readonly string BeginRunTracePath = Path.Combine(GetModDirectory(), "BetaDirectConnect.beginrun.trace.log");
     private static bool UseMissingPlayerReadinessForCurrentRun;
+    private static bool LoadedRunStartExplicitlyRequested;
 
     private static readonly AccessTools.FieldRef<NMultiplayerHostSubmenu, Control> HostLoadingOverlayRef =
         AccessTools.FieldRefAccess<NMultiplayerHostSubmenu, Control>("_loadingOverlay");
@@ -157,6 +158,14 @@ public static class BetaDirectConnectPatches
     private static readonly PropertyInfo RunManagerStateProperty =
         AccessTools.Property(typeof(RunManager), "State")
         ?? throw new InvalidOperationException("Could not find RunManager.State.");
+
+    private static readonly FieldInfo LoadRunLobbyConnectingPlayersField =
+        AccessTools.Field(typeof(LoadRunLobby), "_connectingPlayers")
+        ?? throw new InvalidOperationException("Could not find LoadRunLobby._connectingPlayers.");
+
+    private static readonly FieldInfo LoadRunLobbyReadyPlayersField =
+        AccessTools.Field(typeof(LoadRunLobby), "_readyPlayers")
+        ?? throw new InvalidOperationException("Could not find LoadRunLobby._readyPlayers.");
 
     [HarmonyPatch(typeof(NJoinFriendScreen), nameof(NJoinFriendScreen._Ready))]
     private static class JoinFriendReadyPatch
@@ -289,7 +298,7 @@ public static class BetaDirectConnectPatches
             BetaDirectConnectConfigService.UpdateHostPort(port);
             MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localPlayerId={localPlayerId}, port={port}");
 
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
             if (!readSaveResult.Success || readSaveResult.SaveData == null)
             {
                 MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
@@ -337,7 +346,7 @@ public static class BetaDirectConnectPatches
 
             NMultiplayerSubmenu submenu = __instance.OpenMultiplayerSubmenu();
             ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
             if (readSaveResult.SaveData != null)
             {
                 submenu.StartHost(readSaveResult.SaveData);
@@ -432,6 +441,7 @@ public static class BetaDirectConnectPatches
         private static void Prefix(object state, StartRunLobby lobby, bool shouldSave, DateTimeOffset? dailyTime)
         {
             UseMissingPlayerReadinessForCurrentRun = false;
+            LoadedRunStartExplicitlyRequested = false;
             TraceBeginRun(
                 $"RunManager.SetUpNewMultiPlayer shouldSave={shouldSave} dailyTime={dailyTime} " +
                 $"localNetId={SafeGetNetId(lobby.NetService)} serviceType={lobby.NetService.Type} players={DescribeLobbyPlayers(lobby.Players)} state={state}");
@@ -452,6 +462,64 @@ public static class BetaDirectConnectPatches
         private static void Prefix()
         {
             UseMissingPlayerReadinessForCurrentRun = false;
+            LoadedRunStartExplicitlyRequested = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerLoadGameScreen), "OnEmbarkPressed")]
+    private static class MultiplayerLoadGameScreenEmbarkPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = true;
+            MainFile.Logger.Info("[LoadedRunTrace] Explicit loaded-run start requested from standard load screen.");
+        }
+    }
+
+    [HarmonyPatch(typeof(NCustomRunLoadScreen), "OnEmbarkPressed")]
+    private static class CustomRunLoadScreenEmbarkPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = true;
+            MainFile.Logger.Info("[LoadedRunTrace] Explicit loaded-run start requested from custom load screen.");
+        }
+    }
+
+    [HarmonyPatch(typeof(NDailyRunLoadScreen), "OnEmbarkPressed")]
+    private static class DailyRunLoadScreenEmbarkPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = true;
+            MainFile.Logger.Info("[LoadedRunTrace] Explicit loaded-run start requested from daily load screen.");
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerLoadGameScreen), "OnUnreadyPressed")]
+    private static class MultiplayerLoadGameScreenUnreadyPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NCustomRunLoadScreen), "OnUnreadyPressed")]
+    private static class CustomRunLoadScreenUnreadyPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NDailyRunLoadScreen), "OnUnreadyPressed")]
+    private static class DailyRunLoadScreenUnreadyPatch
+    {
+        private static void Prefix()
+        {
+            LoadedRunStartExplicitlyRequested = false;
         }
     }
 
@@ -461,6 +529,7 @@ public static class BetaDirectConnectPatches
         private static void Prefix()
         {
             UseMissingPlayerReadinessForCurrentRun = false;
+            LoadedRunStartExplicitlyRequested = false;
         }
     }
 
@@ -546,6 +615,84 @@ public static class BetaDirectConnectPatches
             }
 
             RebuildSavedRunLobbyForConnectedPlayers(state, lobby);
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "BeginRunIfAllPlayersReady")]
+    private static class LoadRunLobbyBeginRunIfAllPlayersReadyPatch
+    {
+        private static bool Prefix(LoadRunLobby __instance)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            if (LoadedRunStartExplicitlyRequested)
+            {
+                return true;
+            }
+
+            MainFile.Logger.Info(
+                $"[LoadedRunTrace] Suppressed automatic BeginRunIfAllPlayersReady. connected=[{string.Join(", ", __instance.ConnectedPlayerIds.OrderBy(id => id))}] " +
+                $"explicitStartRequested={LoadedRunStartExplicitlyRequested}");
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "TryBeginRun")]
+    private static class LoadRunLobbyTryBeginRunPatch
+    {
+        private static bool Prefix(LoadRunLobby __instance, ref Task __result)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            ReconcileLoadedRunConnectedPlayersFromHostPeers(__instance);
+
+            int connectingPlayers = GetConnectingPlayerCount(__instance);
+            HashSet<ulong> readyPlayers = GetLoadedRunReadyPlayers(__instance);
+            MainFile.Logger.Info(
+                $"[LoadedRunTrace] TryBeginRun precheck connected=[{string.Join(", ", __instance.ConnectedPlayerIds.OrderBy(id => id))}] " +
+                $"ready=[{string.Join(", ", readyPlayers.OrderBy(id => id))}] connecting={connectingPlayers} " +
+                $"saved=[{string.Join(", ", __instance.Run.Players.Select(player => player.NetId).OrderBy(id => id))}] " +
+                $"peers=[{DescribeConnectedPeers(__instance.NetService as INetHostGameService)}] explicitStartRequested={LoadedRunStartExplicitlyRequested}");
+
+            if (connectingPlayers > 0)
+            {
+                MainFile.Logger.Info("[LoadedRunTrace] Deferring TryBeginRun because one or more players are still handshaking.");
+                __result = Task.CompletedTask;
+                return false;
+            }
+
+            if (!LoadedRunStartExplicitlyRequested)
+            {
+                MainFile.Logger.Info("[LoadedRunTrace] Suppressed TryBeginRun because start was not explicitly requested.");
+                __result = Task.CompletedTask;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "HandleClientLoadJoinRequestMessage")]
+    private static class LoadRunLobbyHandleClientLoadJoinRequestMessagePatch
+    {
+        private static void Postfix(LoadRunLobby __instance, ulong senderId)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return;
+            }
+
+            ReconcileLoadedRunConnectedPlayersFromHostPeers(__instance);
+            MainFile.Logger.Info(
+                $"[LoadedRunTrace] HandleClientLoadJoinRequestMessage sender={senderId} connected=[{string.Join(", ", __instance.ConnectedPlayerIds.OrderBy(id => id))}] " +
+                $"ready=[{string.Join(", ", GetLoadedRunReadyPlayers(__instance).OrderBy(id => id))}] connecting={GetConnectingPlayerCount(__instance)} " +
+                $"peers=[{DescribeConnectedPeers(__instance.NetService as INetHostGameService)}]");
         }
     }
 
@@ -1005,6 +1152,7 @@ public static class BetaDirectConnectPatches
         Control loadingOverlay = MultiplayerLoadingOverlayRef(submenu);
         NSubmenuStack stack = MultiplayerStackRef(submenu);
         int port = BetaDirectConnectConfigService.Current.HostPort;
+        LoadedRunStartExplicitlyRequested = false;
         loadingOverlay.Visible = true;
         try
         {
@@ -1160,8 +1308,19 @@ public static class BetaDirectConnectPatches
         }
     }
 
-    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localPlayerId)
+    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localPlayerId, bool preferOfficial = false)
     {
+        if (preferOfficial)
+        {
+            ReadSaveResult<SerializableRun> officialSave = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+            if (officialSave.Success || officialSave.Status != ReadSaveStatus.FileNotFound)
+            {
+                return officialSave;
+            }
+
+            return LoadDirectConnectMultiplayerRunSave(localPlayerId);
+        }
+
         ReadSaveResult<SerializableRun> directSave = LoadDirectConnectMultiplayerRunSave(localPlayerId);
         if (directSave.Success || directSave.Status != ReadSaveStatus.FileNotFound)
         {
@@ -1234,7 +1393,7 @@ public static class BetaDirectConnectPatches
         }
 
         ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
-        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
+        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
         if (readSaveResult.Success && readSaveResult.SaveData != null)
         {
             try
@@ -1363,6 +1522,50 @@ public static class BetaDirectConnectPatches
         }
 
         return !RunManager.Instance.RunLobby.ConnectedPlayerIds.Contains(playerId);
+    }
+
+    private static int GetConnectingPlayerCount(LoadRunLobby lobby)
+    {
+        return (LoadRunLobbyConnectingPlayersField.GetValue(lobby) as System.Collections.ICollection)?.Count ?? 0;
+    }
+
+    private static HashSet<ulong> GetLoadedRunReadyPlayers(LoadRunLobby lobby)
+    {
+        return LoadRunLobbyReadyPlayersField.GetValue(lobby) as HashSet<ulong> ?? new HashSet<ulong>();
+    }
+
+    private static void ReconcileLoadedRunConnectedPlayersFromHostPeers(LoadRunLobby lobby)
+    {
+        if (lobby.NetService is not INetHostGameService hostGameService)
+        {
+            return;
+        }
+
+        HashSet<ulong> savedPlayerIds = lobby.Run.Players.Select(player => player.NetId).ToHashSet();
+        HashSet<ulong> authoritativeConnectedPlayers = new() { lobby.NetService.NetId };
+        foreach (NetClientData peer in hostGameService.ConnectedPeers)
+        {
+            if (peer.readyForBroadcasting && savedPlayerIds.Contains(peer.peerId))
+            {
+                authoritativeConnectedPlayers.Add(peer.peerId);
+            }
+        }
+
+        if (authoritativeConnectedPlayers.SetEquals(lobby.ConnectedPlayerIds))
+        {
+            return;
+        }
+
+        HashSet<ulong> previous = lobby.ConnectedPlayerIds.ToHashSet();
+        lobby.ConnectedPlayerIds.Clear();
+        foreach (ulong playerId in authoritativeConnectedPlayers)
+        {
+            lobby.ConnectedPlayerIds.Add(playerId);
+        }
+
+        MainFile.Logger.Info(
+            $"[LoadedRunTrace] Reconciled ConnectedPlayerIds from host peers. before=[{string.Join(", ", previous.OrderBy(id => id))}] " +
+            $"after=[{string.Join(", ", lobby.ConnectedPlayerIds.OrderBy(id => id))}] peers=[{DescribeConnectedPeers(hostGameService)}]");
     }
 
     private static bool HasPeerInputState(PeerInputSynchronizer synchronizer, ulong playerId)
@@ -1539,6 +1742,16 @@ public static class BetaDirectConnectPatches
     private static void TraceReadiness(string message)
     {
         MainFile.Logger.Info($"[ReadinessTrace] {message}");
+    }
+
+    private static string DescribeConnectedPeers(INetHostGameService? hostGameService)
+    {
+        if (hostGameService == null)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(", ", hostGameService.ConnectedPeers.Select(peer => $"{peer.peerId}:ready={peer.readyForBroadcasting}"));
     }
 
     private static string DescribeLobbyPlayers(System.Collections.Generic.IEnumerable<LobbyPlayer> players)
