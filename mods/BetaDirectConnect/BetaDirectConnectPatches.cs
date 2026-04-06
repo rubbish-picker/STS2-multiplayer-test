@@ -5,11 +5,15 @@ using System.Reflection;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Extensions;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
+using MegaCrit.Sts2.Core.Multiplayer.Game.PeerInput;
 using MegaCrit.Sts2.Core.Multiplayer.Transport.ENet;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
@@ -22,6 +26,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Platform.Null;
 using MegaCrit.Sts2.Core.Platform.Steam;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -48,6 +53,101 @@ public static class BetaDirectConnectPatches
 
     private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuButton> MultiplayerLoadButtonRef =
         AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuButton>("_loadButton");
+
+    private static readonly AccessTools.FieldRef<MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker, INetGameService> NetQualityTrackerNetServiceRef =
+        AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker, INetGameService>("_netService");
+
+    private static readonly MethodInfo RunManagerRemotePlayerDisconnectedMethod =
+        AccessTools.Method(typeof(RunManager), "RemotePlayerDisconnected")
+        ?? throw new InvalidOperationException("Could not find RunManager.RemotePlayerDisconnected.");
+
+    private static readonly AccessTools.FieldRef<MegaCrit.Sts2.Core.Combat.CombatManager, System.Collections.Generic.HashSet<Player>> CombatPlayersReadyToEndTurnRef =
+        AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Combat.CombatManager, System.Collections.Generic.HashSet<Player>>("_playersReadyToEndTurn");
+
+    private static readonly AccessTools.FieldRef<MegaCrit.Sts2.Core.Combat.CombatManager, System.Collections.Generic.HashSet<Player>> CombatPlayersReadyToBeginEnemyTurnRef =
+        AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Combat.CombatManager, System.Collections.Generic.HashSet<Player>>("_playersReadyToBeginEnemyTurn");
+
+    private static readonly AccessTools.FieldRef<MegaCrit.Sts2.Core.Combat.CombatManager, MegaCrit.Sts2.Core.Combat.CombatState?> CombatStateRef =
+        AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Combat.CombatManager, MegaCrit.Sts2.Core.Combat.CombatState?>("_state");
+
+    private static readonly AccessTools.FieldRef<ActChangeSynchronizer, System.Collections.Generic.List<bool>> ActChangeReadyPlayersRef =
+        AccessTools.FieldRefAccess<ActChangeSynchronizer, System.Collections.Generic.List<bool>>("_readyPlayers");
+
+    private static readonly AccessTools.FieldRef<ActChangeSynchronizer, RunState> ActChangeRunStateRef =
+        AccessTools.FieldRefAccess<ActChangeSynchronizer, RunState>("_runState");
+
+    private static readonly MethodInfo ActChangeMoveToNextActMethod =
+        AccessTools.Method(typeof(ActChangeSynchronizer), "MoveToNextAct")
+        ?? throw new InvalidOperationException("Could not find ActChangeSynchronizer.MoveToNextAct.");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, System.Collections.Generic.List<MapVote?>> MapSelectionVotesRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, System.Collections.Generic.List<MapVote?>>("_votes");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, RunState> MapSelectionRunStateRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, RunState>("_runState");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, INetGameService> MapSelectionNetServiceRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, INetGameService>("_netService");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, MegaCrit.Sts2.Core.Random.Rng> MapSelectionRngRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, MegaCrit.Sts2.Core.Random.Rng>("_multiplayerMapPointSelection");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, RunLocation> MapSelectionAcceptingVotesFromSourceRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, RunLocation>("_acceptingVotesFromSource");
+
+    private static readonly AccessTools.FieldRef<MapSelectionSynchronizer, MegaCrit.Sts2.Core.GameActions.Multiplayer.ActionQueueSynchronizer> MapSelectionActionQueueSynchronizerRef =
+        AccessTools.FieldRefAccess<MapSelectionSynchronizer, MegaCrit.Sts2.Core.GameActions.Multiplayer.ActionQueueSynchronizer>("_actionQueueSynchronizer");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, System.Collections.Generic.List<uint?>> EventPlayerVotesRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, System.Collections.Generic.List<uint?>>("_playerVotes");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, IPlayerCollection> EventPlayerCollectionRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, IPlayerCollection>("_playerCollection");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, INetGameService> EventNetServiceRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, INetGameService>("_netService");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, MegaCrit.Sts2.Core.Random.Rng> EventRngRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, MegaCrit.Sts2.Core.Random.Rng>("_multiplayerOptionSelectionRng");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, uint> EventPageIndexRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, uint>("_pageIndex");
+
+    private static readonly AccessTools.FieldRef<EventSynchronizer, RunLocationTargetedMessageBuffer> EventMessageBufferRef =
+        AccessTools.FieldRefAccess<EventSynchronizer, RunLocationTargetedMessageBuffer>("_messageBuffer");
+
+    private static readonly MethodInfo EventChooseOptionForSharedEventMethod =
+        AccessTools.Method(typeof(EventSynchronizer), "ChooseOptionForSharedEvent")
+        ?? throw new InvalidOperationException("Could not find EventSynchronizer.ChooseOptionForSharedEvent.");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, IPlayerCollection> TreasurePlayerCollectionRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, IPlayerCollection>("_playerCollection");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<int?>> TreasureVotesRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<int?>>("_votes");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<RelicModel>?> TreasureCurrentRelicsRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, System.Collections.Generic.List<RelicModel>?>("_currentRelics");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, int?> TreasurePredictedVoteRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, int?>("_predictedVote");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, MegaCrit.Sts2.Core.Random.Rng> TreasureRngRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, MegaCrit.Sts2.Core.Random.Rng>("_rng");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Action<List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult>>?> TreasureRelicsAwardedEventRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, Action<List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult>>?>("RelicsAwarded");
+
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Action?> TreasureVotesChangedEventRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, Action?>("VotesChanged");
+
+    private static readonly MethodInfo PeerInputGetStateForPlayerMethod =
+        AccessTools.Method(typeof(PeerInputSynchronizer), "GetStateForPlayer")
+        ?? throw new InvalidOperationException("Could not find PeerInputSynchronizer.GetStateForPlayer.");
+
+    private static readonly PropertyInfo RunManagerStateProperty =
+        AccessTools.Property(typeof(RunManager), "State")
+        ?? throw new InvalidOperationException("Could not find RunManager.State.");
 
     [HarmonyPatch(typeof(NJoinFriendScreen), nameof(NJoinFriendScreen._Ready))]
     private static class JoinFriendReadyPatch
@@ -305,6 +405,26 @@ public static class BetaDirectConnectPatches
         }
     }
 
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker), "HandleHeartbeatRequestMessage")]
+    private static class NetQualityTrackerHeartbeatRequestPatch
+    {
+        private static bool Prefix(MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker __instance, MegaCrit.Sts2.Core.Multiplayer.Messages.HeartbeatRequestMessage message, ulong senderId)
+        {
+            INetGameService netService = NetQualityTrackerNetServiceRef(__instance);
+            if (netService.Platform != PlatformType.None || netService.Type != NetGameType.Client)
+            {
+                return true;
+            }
+
+            netService.SendMessage(new MegaCrit.Sts2.Core.Multiplayer.Messages.HeartbeatResponseMessage
+            {
+                counter = message.counter,
+                isLoading = netService.IsGameLoading
+            });
+            return false;
+        }
+    }
+
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun))]
     private static class SaveRunPatch
     {
@@ -316,6 +436,338 @@ public static class BetaDirectConnectPatches
             }
 
             __result = SaveClientMirrorAsync(preFinishedRoom);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedMultiPlayer))]
+    private static class SetUpSavedMultiPlayerPatch
+    {
+        private static void Postfix(RunState state, LoadRunLobby lobby)
+        {
+            if (lobby.NetService.Type != NetGameType.Host)
+            {
+                return;
+            }
+
+            if (lobby.ConnectedPlayerIds.Count >= state.Players.Count)
+            {
+                return;
+            }
+
+            RebuildSavedRunLobbyForConnectedPlayers(state, lobby);
+        }
+    }
+
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Combat.CombatManager), nameof(MegaCrit.Sts2.Core.Combat.CombatManager.AllPlayersReadyToEndTurn))]
+    private static class CombatManagerAllPlayersReadyToEndTurnPatch
+    {
+        private static bool Prefix(MegaCrit.Sts2.Core.Combat.CombatManager __instance, ref bool __result)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            MegaCrit.Sts2.Core.Combat.CombatState? state = CombatStateRef(__instance);
+            if (state == null)
+            {
+                return true;
+            }
+
+            int connectedReadyPlayers = CountConnectedPlayers(
+                CombatPlayersReadyToEndTurnRef(__instance).Select(player => player.NetId));
+            int expectedConnectedPlayers = GetConnectedPlayerCountOrFallback(state.RunState);
+            __result = connectedReadyPlayers >= expectedConnectedPlayers && state.CurrentSide == MegaCrit.Sts2.Core.Combat.CombatSide.Player;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Combat.CombatManager), nameof(MegaCrit.Sts2.Core.Combat.CombatManager.SetReadyToBeginEnemyTurn))]
+    private static class CombatManagerSetReadyToBeginEnemyTurnPatch
+    {
+        private static bool Prefix(MegaCrit.Sts2.Core.Combat.CombatManager __instance, Player player, Func<Task>? actionDuringEnemyTurn)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            MegaCrit.Sts2.Core.Combat.CombatState? state = CombatStateRef(__instance);
+            if (state == null)
+            {
+                return true;
+            }
+
+            if (!__instance.IsInProgress)
+            {
+                MainFile.Logger.Error("Trying to set player ready to begin enemy turn, but combat is over!");
+            }
+
+            CombatPlayersReadyToBeginEnemyTurnRef(__instance).Add(player);
+            bool allConnectedPlayersReady =
+                CountConnectedPlayers(CombatPlayersReadyToBeginEnemyTurnRef(__instance).Select(readyPlayer => readyPlayer.NetId))
+                >= GetConnectedPlayerCountOrFallback(state.RunState)
+                && state.CurrentSide == MegaCrit.Sts2.Core.Combat.CombatSide.Player;
+
+            if (allConnectedPlayersReady || RunManager.Instance.NetService.Type == NetGameType.Singleplayer)
+            {
+                TaskHelper.RunSafely(InvokeAfterAllPlayersReadyToBeginEnemyTurn(__instance, actionDuringEnemyTurn));
+            }
+
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(ActChangeSynchronizer), nameof(ActChangeSynchronizer.IsWaitingForOtherPlayers))]
+    private static class ActChangeSynchronizerIsWaitingPatch
+    {
+        private static bool Prefix(ActChangeSynchronizer __instance, ref bool __result)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            RunState runState = ActChangeRunStateRef(__instance);
+            List<int> connectedSlots = GetConnectedPlayerSlots(runState);
+            int localSlot = runState.GetPlayerSlotIndex(LocalContext.NetId!.Value);
+            List<bool> readyPlayers = ActChangeReadyPlayersRef(__instance);
+
+            __result = connectedSlots.Any(slot => slot != localSlot && (slot >= readyPlayers.Count || !readyPlayers[slot]));
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(ActChangeSynchronizer), nameof(ActChangeSynchronizer.OnPlayerReady))]
+    private static class ActChangeSynchronizerOnPlayerReadyPatch
+    {
+        private static bool Prefix(ActChangeSynchronizer __instance, Player player)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            RunState runState = ActChangeRunStateRef(__instance);
+            List<bool> readyPlayers = ActChangeReadyPlayersRef(__instance);
+            int playerSlotIndex = runState.GetPlayerSlotIndex(player);
+            readyPlayers[playerSlotIndex] = true;
+
+            if (GetConnectedPlayerSlots(runState).All(slot => slot < readyPlayers.Count && readyPlayers[slot]))
+            {
+                ActChangeMoveToNextActMethod.Invoke(__instance, Array.Empty<object>());
+            }
+
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(MapSelectionSynchronizer), nameof(MapSelectionSynchronizer.PlayerVotedForMapCoord))]
+    private static class MapSelectionSynchronizerVotePatch
+    {
+        private static bool Prefix(MapSelectionSynchronizer __instance, Player player, RunLocation source, MapVote? destination)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            RunLocation acceptingVotesFromSource = MapSelectionAcceptingVotesFromSourceRef(__instance);
+            if (acceptingVotesFromSource != source)
+            {
+                return true;
+            }
+
+            RunState runState = MapSelectionRunStateRef(__instance);
+            List<MapVote?> votes = MapSelectionVotesRef(__instance);
+            INetGameService netService = MapSelectionNetServiceRef(__instance);
+            int playerSlotIndex = runState.GetPlayerSlotIndex(player);
+            votes[playerSlotIndex] = destination;
+
+            List<int> connectedSlots = GetConnectedPlayerSlots(runState);
+            bool allConnectedVotesReady = connectedSlots.All(slot =>
+                slot < votes.Count
+                && votes[slot].HasValue
+                && votes[slot]!.Value.mapGenerationCount == __instance.MapGenerationCount);
+
+            if (allConnectedVotesReady && netService.Type != NetGameType.Client)
+            {
+                MegaCrit.Sts2.Core.Map.MapCoord coord = MapSelectionRngRef(__instance)
+                    .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList())
+                    .Value.coord;
+                acceptingVotesFromSource.coord = coord;
+                MapSelectionAcceptingVotesFromSourceRef(__instance) = acceptingVotesFromSource;
+                MapSelectionActionQueueSynchronizerRef(__instance)
+                    .RequestEnqueue(new MegaCrit.Sts2.Core.GameActions.MoveToMapCoordAction(LocalContext.GetMe(runState), coord));
+            }
+
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(EventSynchronizer), "PlayerVotedForSharedOptionIndex")]
+    private static class EventSynchronizerVotePatch
+    {
+        private static bool Prefix(EventSynchronizer __instance, Player player, uint optionIndex, uint pageIndex)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            uint currentPageIndex = EventPageIndexRef(__instance);
+            if (pageIndex != currentPageIndex)
+            {
+                return true;
+            }
+
+            IPlayerCollection playerCollection = EventPlayerCollectionRef(__instance);
+            List<uint?> votes = EventPlayerVotesRef(__instance);
+            votes[playerCollection.GetPlayerSlotIndex(player)] = optionIndex;
+
+            List<int> connectedSlots = GetConnectedPlayerSlots(playerCollection.Players);
+            if (!connectedSlots.All(slot => slot < votes.Count && votes[slot].HasValue))
+            {
+                return false;
+            }
+
+            INetGameService netService = EventNetServiceRef(__instance);
+            if (netService.Type == NetGameType.Client)
+            {
+                return false;
+            }
+
+            uint chosenOption = EventRngRef(__instance)
+                .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList())
+                .Value;
+            RunLocationTargetedMessageBuffer messageBuffer = EventMessageBufferRef(__instance);
+            netService.SendMessage(new MegaCrit.Sts2.Core.Multiplayer.Messages.Game.Sync.SharedEventOptionChosenMessage
+            {
+                optionIndex = chosenOption,
+                pageIndex = currentPageIndex,
+                location = messageBuffer.CurrentLocation
+            });
+            EventChooseOptionForSharedEventMethod.Invoke(__instance, new object[] { chosenOption });
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(TreasureRoomRelicSynchronizer), nameof(TreasureRoomRelicSynchronizer.OnPicked))]
+    private static class TreasureRoomRelicSynchronizerOnPickedPatch
+    {
+        private static bool Prefix(TreasureRoomRelicSynchronizer __instance, Player player, int index)
+        {
+            if (!ShouldUseConnectedPlayerCountsForReadiness())
+            {
+                return true;
+            }
+
+            List<int?> votes = TreasureVotesRef(__instance);
+            List<RelicModel>? currentRelics = TreasureCurrentRelicsRef(__instance);
+            if (currentRelics == null || index >= currentRelics.Count)
+            {
+                return true;
+            }
+
+            IPlayerCollection playerCollection = TreasurePlayerCollectionRef(__instance);
+            votes[playerCollection.GetPlayerSlotIndex(player)] = index;
+            TreasureVotesChangedEventRef(__instance)?.Invoke();
+
+            List<int> connectedSlots = GetConnectedPlayerSlots(playerCollection.Players);
+            if (!connectedSlots.All(slot => slot < votes.Count && votes[slot].HasValue))
+            {
+                return false;
+            }
+
+            int? predictedVote = TreasurePredictedVoteRef(__instance);
+            if (predictedVote.HasValue)
+            {
+                TreasurePredictedVoteRef(__instance) = null;
+                int localSlot = playerCollection.GetPlayerSlotIndex(LocalContext.GetMe(playerCollection));
+                if (votes[localSlot] != predictedVote.Value)
+                {
+                    TreasureVotesChangedEventRef(__instance)?.Invoke();
+                }
+            }
+
+            AwardRelicsForConnectedPlayers(__instance, currentRelics, votes, playerCollection, connectedSlots);
+            TreasureCurrentRelicsRef(__instance) = null;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PeerInputSynchronizer), nameof(PeerInputSynchronizer.GetControlSpaceFocusPosition))]
+    private static class PeerInputSynchronizerGetControlSpaceFocusPositionPatch
+    {
+        private static bool Prefix(PeerInputSynchronizer __instance, ulong playerId, Control rootControl, ref Vector2 __result)
+        {
+            if (!ShouldUseMissingPeerInputFallback(__instance, playerId))
+            {
+                return true;
+            }
+
+            __result = rootControl.Size * 0.5f;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PeerInputSynchronizer), nameof(PeerInputSynchronizer.GetMouseDown))]
+    private static class PeerInputSynchronizerGetMouseDownPatch
+    {
+        private static bool Prefix(PeerInputSynchronizer __instance, ulong playerId, ref bool __result)
+        {
+            if (!ShouldUseMissingPeerInputFallback(__instance, playerId))
+            {
+                return true;
+            }
+
+            __result = false;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PeerInputSynchronizer), nameof(PeerInputSynchronizer.GetScreenType))]
+    private static class PeerInputSynchronizerGetScreenTypePatch
+    {
+        private static bool Prefix(PeerInputSynchronizer __instance, ulong playerId, ref NetScreenType __result)
+        {
+            if (!ShouldUseMissingPeerInputFallback(__instance, playerId))
+            {
+                return true;
+            }
+
+            __result = NetScreenType.None;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PeerInputSynchronizer), nameof(PeerInputSynchronizer.GetHoveredModelData))]
+    private static class PeerInputSynchronizerGetHoveredModelDataPatch
+    {
+        private static bool Prefix(PeerInputSynchronizer __instance, ulong playerId, ref HoveredModelData __result)
+        {
+            if (!ShouldUseMissingPeerInputFallback(__instance, playerId))
+            {
+                return true;
+            }
+
+            __result = default;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PeerInputSynchronizer), nameof(PeerInputSynchronizer.GetIsTargeting))]
+    private static class PeerInputSynchronizerGetIsTargetingPatch
+    {
+        private static bool Prefix(PeerInputSynchronizer __instance, ulong playerId, ref bool __result)
+        {
+            if (!ShouldUseMissingPeerInputFallback(__instance, playerId))
+            {
+                return true;
+            }
+
+            __result = false;
             return false;
         }
     }
@@ -494,7 +946,7 @@ public static class BetaDirectConnectPatches
     private static async Task SaveClientMirrorAsync(AbstractRoom? preFinishedRoom)
     {
         SerializableRun save = RunManager.Instance.ToSave(preFinishedRoom);
-        string path = SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName));
+        string path = ToFileSystemPath(SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName)));
         string backupPath = path + ".backup";
 
         string? directory = Path.GetDirectoryName(path);
@@ -512,6 +964,212 @@ public static class BetaDirectConnectPatches
         await using FileStream stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
         MainFile.Logger.Info($"Mirrored direct-connect client multiplayer save to {path}");
+    }
+
+    private static void RebuildSavedRunLobbyForConnectedPlayers(RunState state, LoadRunLobby loadLobby)
+    {
+        RunManager runManager = RunManager.Instance;
+        RunLobby? originalRunLobby = runManager.RunLobby;
+        MegaCrit.Sts2.Core.Multiplayer.CombatStateSynchronizer? originalCombatSync = runManager.CombatStateSynchronizer;
+
+        originalCombatSync?.Dispose();
+        originalRunLobby?.Dispose();
+
+        RunLobby runLobby = new(
+            loadLobby.GameMode,
+            loadLobby.NetService,
+            runManager,
+            state,
+            loadLobby.ConnectedPlayerIds);
+        runLobby.RemotePlayerDisconnected += CreateRemotePlayerDisconnectedHandler(runManager);
+
+        MegaCrit.Sts2.Core.Multiplayer.CombatStateSynchronizer combatSync = new(loadLobby.NetService, runLobby, state);
+
+        AccessTools.Property(typeof(RunManager), nameof(RunManager.RunLobby))?.SetValue(runManager, runLobby);
+        AccessTools.Property(typeof(RunManager), nameof(RunManager.CombatStateSynchronizer))?.SetValue(runManager, combatSync);
+
+        MainFile.Logger.Info(
+            $"Rebuilt saved multiplayer RunLobby using connected players [{string.Join(", ", loadLobby.ConnectedPlayerIds.OrderBy(id => id))}] " +
+            $"instead of saved players [{string.Join(", ", state.Players.Select(player => player.NetId).OrderBy(id => id))}].");
+    }
+
+    private static bool ShouldUseConnectedPlayerCountsForReadiness()
+    {
+        INetGameService? netService = RunManager.Instance.NetService;
+        return netService != null
+            && netService.Platform == PlatformType.None
+            && netService.Type == NetGameType.Host
+            && RunManager.Instance.RunLobby != null;
+    }
+
+    private static bool ShouldUseMissingPeerInputFallback(PeerInputSynchronizer synchronizer, ulong playerId)
+    {
+        if (HasPeerInputState(synchronizer, playerId))
+        {
+            return false;
+        }
+
+        INetGameService netService = synchronizer.NetService;
+        if (!netService.IsConnected || netService.Platform != PlatformType.None || RunManager.Instance.RunLobby == null)
+        {
+            return false;
+        }
+
+        HashSet<ulong> savedPlayerIds = GetSavedPlayerIds();
+        if (!savedPlayerIds.Contains(playerId))
+        {
+            return false;
+        }
+
+        return !RunManager.Instance.RunLobby.ConnectedPlayerIds.Contains(playerId);
+    }
+
+    private static bool HasPeerInputState(PeerInputSynchronizer synchronizer, ulong playerId)
+    {
+        return PeerInputGetStateForPlayerMethod.Invoke(synchronizer, new object?[] { playerId }) != null;
+    }
+
+    private static HashSet<ulong> GetSavedPlayerIds()
+    {
+        RunState? state = RunManagerStateProperty.GetValue(RunManager.Instance) as RunState;
+        return state?.Players.Select(player => player.NetId).ToHashSet() ?? new HashSet<ulong>();
+    }
+
+    private static int GetConnectedPlayerCountOrFallback(IRunState state)
+    {
+        RunLobby? runLobby = RunManager.Instance.RunLobby;
+        if (runLobby == null)
+        {
+            return state.Players.Count;
+        }
+
+        int connected = runLobby.ConnectedPlayerIds.Count;
+        return connected > 0 ? connected : state.Players.Count;
+    }
+
+    private static List<int> GetConnectedPlayerSlots(IEnumerable<Player> players)
+    {
+        HashSet<ulong> connectedPlayerIds = GetConnectedPlayerIdsOrAll(players.Select(player => player.NetId));
+        return players
+            .Select((player, index) => new { player.NetId, index })
+            .Where(entry => connectedPlayerIds.Contains(entry.NetId))
+            .Select(entry => entry.index)
+            .ToList();
+    }
+
+    private static List<int> GetConnectedPlayerSlots(IRunState state)
+    {
+        return GetConnectedPlayerSlots(state.Players);
+    }
+
+    private static int CountConnectedPlayers(IEnumerable<ulong> playerIds)
+    {
+        RunLobby? runLobby = RunManager.Instance.RunLobby;
+        if (runLobby == null)
+        {
+            return playerIds.Distinct().Count();
+        }
+
+        HashSet<ulong> connected = runLobby.ConnectedPlayerIds.ToHashSet();
+        return playerIds.Where(connected.Contains).Distinct().Count();
+    }
+
+    private static HashSet<ulong> GetConnectedPlayerIdsOrAll(IEnumerable<ulong> fallbackPlayerIds)
+    {
+        HashSet<ulong> fallback = fallbackPlayerIds.ToHashSet();
+        RunLobby? runLobby = RunManager.Instance.RunLobby;
+        if (runLobby == null || runLobby.ConnectedPlayerIds.Count == 0)
+        {
+            return fallback;
+        }
+
+        return runLobby.ConnectedPlayerIds.ToHashSet();
+    }
+
+    private static void AwardRelicsForConnectedPlayers(
+        TreasureRoomRelicSynchronizer synchronizer,
+        List<RelicModel> currentRelics,
+        List<int?> votes,
+        IPlayerCollection playerCollection,
+        List<int> connectedSlots)
+    {
+        Dictionary<int, List<Player>> voteBuckets = new();
+        for (int i = 0; i < currentRelics.Count; i++)
+        {
+            voteBuckets[i] = new List<Player>();
+        }
+
+        foreach (int slot in connectedSlots)
+        {
+            Player player = playerCollection.Players[slot];
+            int vote = votes[slot]!.Value;
+            voteBuckets[vote].Add(player);
+        }
+
+        List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult> results = new();
+        List<RelicModel> unclaimedRelics = new();
+        MegaCrit.Sts2.Core.Random.Rng rng = TreasureRngRef(synchronizer);
+
+        foreach ((int relicIndex, List<Player> voters) in voteBuckets)
+        {
+            RelicModel relic = currentRelics[relicIndex];
+            if (voters.Count == 0)
+            {
+                unclaimedRelics.Add(relic);
+            }
+            else if (voters.Count == 1)
+            {
+                results.Add(new MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult
+                {
+                    type = MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResultType.OnlyOnePlayerVoted,
+                    relic = relic,
+                    player = voters[0]
+                });
+            }
+            else
+            {
+                MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingFightMove[] possibleMoves =
+                    Enum.GetValues<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingFightMove>();
+                results.Add(MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult.GenerateRelicFight(
+                    voters,
+                    relic,
+                    () => rng.NextItem(possibleMoves)));
+            }
+        }
+
+        List<Player> connectedPlayers = connectedSlots.Select(slot => playerCollection.Players[slot]).ToList();
+        List<Player> playersWithoutRelic = connectedPlayers
+            .Where(player => results.All(result => result.player != player))
+            .ToList();
+        unclaimedRelics.StableShuffle(rng);
+        for (int i = 0; i < Mathf.Min(unclaimedRelics.Count, playersWithoutRelic.Count); i++)
+        {
+            results.Add(new MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult
+            {
+                type = MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResultType.ConsolationPrize,
+                player = playersWithoutRelic[i],
+                relic = unclaimedRelics[i]
+            });
+        }
+
+        TreasureRelicsAwardedEventRef(synchronizer)?.Invoke(results);
+    }
+
+    private static Task InvokeAfterAllPlayersReadyToBeginEnemyTurn(MegaCrit.Sts2.Core.Combat.CombatManager combatManager, Func<Task>? actionDuringEnemyTurn)
+    {
+        MethodInfo method = AccessTools.Method(
+            typeof(MegaCrit.Sts2.Core.Combat.CombatManager),
+            "AfterAllPlayersReadyToBeginEnemyTurn",
+            new[] { typeof(Func<Task>) })
+            ?? throw new InvalidOperationException("Could not find CombatManager.AfterAllPlayersReadyToBeginEnemyTurn.");
+
+        return (Task)(method.Invoke(combatManager, new object?[] { actionDuringEnemyTurn })
+            ?? throw new InvalidOperationException("AfterAllPlayersReadyToBeginEnemyTurn returned null."));
+    }
+
+    private static Action<ulong> CreateRemotePlayerDisconnectedHandler(RunManager runManager)
+    {
+        return (Action<ulong>)Delegate.CreateDelegate(typeof(Action<ulong>), runManager, RunManagerRemotePlayerDisconnectedMethod);
     }
 
     private static void ShowSimpleError(string title, string body)
@@ -557,6 +1215,30 @@ public static class BetaDirectConnectPatches
         {
             return 0UL;
         }
+    }
+
+    private static ulong SafeGetHostNetId(INetGameService? netService)
+    {
+        if (netService is not NetClientGameService clientService || !clientService.IsConnected)
+        {
+            return 0UL;
+        }
+
+        try
+        {
+            return clientService.HostNetId;
+        }
+        catch
+        {
+            return 0UL;
+        }
+    }
+
+    private static string ToFileSystemPath(string path)
+    {
+        return path.StartsWith("user://", StringComparison.OrdinalIgnoreCase)
+            ? ProjectSettings.GlobalizePath(path)
+            : path;
     }
 
     private static string GetModDirectory()
