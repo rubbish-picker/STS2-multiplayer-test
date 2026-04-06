@@ -1,3 +1,7 @@
+using System.IO;
+using System.Text.Json;
+using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
@@ -5,6 +9,9 @@ using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
+using MegaCrit.Sts2.Core.Multiplayer.Transport.ENet;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -13,15 +20,20 @@ using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.DailyRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Platform;
+using MegaCrit.Sts2.Core.Platform.Null;
 using MegaCrit.Sts2.Core.Platform.Steam;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Managers;
 using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace BetaDirectConnect;
 
 public static class BetaDirectConnectPatches
 {
+    private static readonly string BeginRunTracePath = Path.Combine(GetModDirectory(), "BetaDirectConnect.beginrun.trace.log");
+
     private static readonly AccessTools.FieldRef<NMultiplayerHostSubmenu, Control> HostLoadingOverlayRef =
         AccessTools.FieldRefAccess<NMultiplayerHostSubmenu, Control>("_loadingOverlay");
 
@@ -174,6 +186,140 @@ public static class BetaDirectConnectPatches
         }
     }
 
+    [HarmonyPatch(typeof(NullPlatformUtilStrategy), nameof(NullPlatformUtilStrategy.GetPlayerName))]
+    private static class NullPlatformGetPlayerNamePatch
+    {
+        private static void Postfix(ulong playerId, ref string __result)
+        {
+            if (playerId == 1UL && string.Equals(__result, "Test Host", StringComparison.Ordinal))
+            {
+                __result = playerId.ToString();
+            }
+            else if (playerId == 1000UL && string.Equals(__result, "Test Client 1", StringComparison.Ordinal))
+            {
+                __result = playerId.ToString();
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(ENetHost), "get_NetId")]
+    private static class ENetHostNetIdPatch
+    {
+        private static bool Prefix(ref ulong __result)
+        {
+            __result = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(StartRunLobby), "HandleLobbyBeginRunMessage")]
+    private static class StartRunLobbyBeginRunTracePatch
+    {
+        private static void Prefix(StartRunLobby __instance, object message, ulong senderId)
+        {
+            TraceBeginRun(
+                $"StartRunLobby.HandleLobbyBeginRunMessage sender={senderId} localNetId={SafeGetNetId(__instance.NetService)} " +
+                $"serviceType={__instance.NetService.Type} players={DescribeLobbyPlayers(__instance.Players)} message={message}");
+        }
+    }
+
+    [HarmonyPatch(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.BeginRun))]
+    private static class CharacterSelectBeginRunTracePatch
+    {
+        private static void Prefix(NCharacterSelectScreen __instance, string seed, object acts, object modifiers)
+        {
+            TraceBeginRun(
+                $"NCharacterSelectScreen.BeginRun localNetId={SafeGetNetId(__instance.Lobby.NetService)} " +
+                $"serviceType={__instance.Lobby.NetService.Type} players={DescribeLobbyPlayers(__instance.Lobby.Players)} seed={seed} acts={acts} modifiers={modifiers}");
+        }
+
+        private static void Finalizer(Exception? __exception)
+        {
+            if (__exception != null)
+            {
+                TraceBeginRun($"NCharacterSelectScreen.BeginRun exception: {__exception}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(NGame), "StartNewMultiplayerRun")]
+    private static class NGameStartNewMultiplayerRunTracePatch
+    {
+        private static void Prefix(StartRunLobby lobby, bool shouldSave, object acts, object modifiers, string seed, int ascensionLevel, DateTimeOffset? dailyTime)
+        {
+            TraceBeginRun(
+                $"NGame.StartNewMultiplayerRun shouldSave={shouldSave} localNetId={SafeGetNetId(lobby.NetService)} " +
+                $"serviceType={lobby.NetService.Type} players={DescribeLobbyPlayers(lobby.Players)} seed={seed} ascension={ascensionLevel} dailyTime={dailyTime} acts={acts} modifiers={modifiers}");
+        }
+
+        private static void Finalizer(Exception? __exception)
+        {
+            if (__exception != null)
+            {
+                TraceBeginRun($"NGame.StartNewMultiplayerRun exception: {__exception}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewMultiPlayer))]
+    private static class RunManagerSetUpNewMultiPlayerTracePatch
+    {
+        private static void Prefix(object state, StartRunLobby lobby, bool shouldSave, DateTimeOffset? dailyTime)
+        {
+            TraceBeginRun(
+                $"RunManager.SetUpNewMultiPlayer shouldSave={shouldSave} dailyTime={dailyTime} " +
+                $"localNetId={SafeGetNetId(lobby.NetService)} serviceType={lobby.NetService.Type} players={DescribeLobbyPlayers(lobby.Players)} state={state}");
+        }
+
+        private static void Finalizer(Exception? __exception)
+        {
+            if (__exception != null)
+            {
+                TraceBeginRun($"RunManager.SetUpNewMultiPlayer exception: {__exception}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.Launch))]
+    private static class RunManagerLaunchTracePatch
+    {
+        private static void Prefix()
+        {
+            TraceBeginRun(
+                $"RunManager.Launch prefix netServiceType={RunManager.Instance.NetService?.Type} " +
+                $"netServiceId={SafeGetNetId(RunManager.Instance.NetService)}");
+        }
+
+        private static void Postfix(object __result)
+        {
+            TraceBeginRun(
+                $"RunManager.Launch postfix LocalContext.NetId={MegaCrit.Sts2.Core.Context.LocalContext.NetId} result={__result}");
+        }
+
+        private static void Finalizer(Exception? __exception)
+        {
+            if (__exception != null)
+            {
+                TraceBeginRun($"RunManager.Launch exception: {__exception}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun))]
+    private static class SaveRunPatch
+    {
+        private static bool Prefix(AbstractRoom? preFinishedRoom, ref Task __result)
+        {
+            if (!ShouldMirrorClientMultiplayerSave())
+            {
+                return true;
+            }
+
+            __result = SaveClientMirrorAsync(preFinishedRoom);
+            return false;
+        }
+    }
+
     public static void TryJoinFromPanel(NJoinFriendScreen screen, LineEdit ipInput, LineEdit portInput, LineEdit playerIdInput)
     {
         MainFile.Logger.Info("TryJoinFromPanel invoked.");
@@ -185,7 +331,9 @@ public static class BetaDirectConnectPatches
             return;
         }
 
-        string playerIdText = string.IsNullOrWhiteSpace(playerIdInput.Text) ? string.Empty : playerIdInput.Text.Trim();
+        string playerIdText = string.IsNullOrWhiteSpace(playerIdInput.Text)
+            ? BetaDirectConnectConfigService.EffectivePlayerIdText
+            : playerIdInput.Text.Trim();
         ulong playerId = BetaDirectConnectConfigService.ParsePlayerIdInput(playerIdText);
         if (playerId == 0)
         {
@@ -330,6 +478,42 @@ public static class BetaDirectConnectPatches
         return Task.CompletedTask;
     }
 
+    private static bool ShouldMirrorClientMultiplayerSave()
+    {
+        if (!RunManager.Instance.ShouldSave)
+        {
+            return false;
+        }
+
+        INetGameService? netService = RunManager.Instance.NetService;
+        return netService != null
+            && netService.Platform == PlatformType.None
+            && netService.Type == NetGameType.Client;
+    }
+
+    private static async Task SaveClientMirrorAsync(AbstractRoom? preFinishedRoom)
+    {
+        SerializableRun save = RunManager.Instance.ToSave(preFinishedRoom);
+        string path = SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName));
+        string backupPath = path + ".backup";
+
+        string? directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            throw new InvalidOperationException("Multiplayer save path has no parent directory.");
+        }
+
+        Directory.CreateDirectory(directory);
+        if (File.Exists(path))
+        {
+            File.Copy(path, backupPath, overwrite: true);
+        }
+
+        await using FileStream stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
+        MainFile.Logger.Info($"Mirrored direct-connect client multiplayer save to {path}");
+    }
+
     private static void ShowSimpleError(string title, string body)
     {
         NErrorPopup? popup = NErrorPopup.Create(title, body, showReportBugButton: false);
@@ -337,5 +521,47 @@ public static class BetaDirectConnectPatches
         {
             NModalContainer.Instance.Add(popup);
         }
+    }
+
+    private static void TraceBeginRun(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(GetModDirectory());
+            File.AppendAllText(BeginRunTracePath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{System.Environment.NewLine}");
+        }
+        catch
+        {
+        }
+
+        MainFile.Logger.Info($"[BeginRunTrace] {message}");
+    }
+
+    private static string DescribeLobbyPlayers(System.Collections.Generic.IEnumerable<LobbyPlayer> players)
+    {
+        return string.Join(", ", players.Select(player => $"{player.id}:{player.character.Id.Entry}:slot{player.slotId}:ready={player.isReady}"));
+    }
+
+    private static ulong SafeGetNetId(INetGameService? netService)
+    {
+        if (netService == null || !netService.IsConnected)
+        {
+            return 0UL;
+        }
+
+        try
+        {
+            return netService.NetId;
+        }
+        catch
+        {
+            return 0UL;
+        }
+    }
+
+    private static string GetModDirectory()
+    {
+        string? location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        return string.IsNullOrWhiteSpace(location) ? AppContext.BaseDirectory : location;
     }
 }

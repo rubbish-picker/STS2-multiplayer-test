@@ -480,7 +480,7 @@ internal sealed class MainForm : Form
             {
                 args.Add("--force-steam");
                 args.Add("off");
-                if (ulong.TryParse(selectedCandidate.UserId, out ulong clientId) && clientId != 1)
+                if (ulong.TryParse(selectedCandidate.UserId, out ulong clientId))
                 {
                     args.Add("--clientId");
                     args.Add(clientId.ToString());
