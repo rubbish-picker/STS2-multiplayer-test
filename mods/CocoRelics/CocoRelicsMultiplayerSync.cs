@@ -155,8 +155,13 @@ public static class CocoRelicsMultiplayerSync
     public static async Task<ObservedRoomInfo> GetOrRequestObservedRoomAsync(MapPoint point, RunState runState)
     {
         INetGameService? netService = RunManager.Instance.NetService;
-        if (netService?.Type != NetGameType.Client)
+        if (netService?.Type != NetGameType.Client || point.PointType == MapPointType.Shop)
         {
+            if (netService?.Type == NetGameType.Client && point.PointType == MapPointType.Shop)
+            {
+                MainFile.Logger.Info($"[CocoRelics] using local shop preview for {point.coord} on client {netService.NetId}.");
+            }
+
             return await CocoRelicsState.GetOrObserveAsync(point, runState);
         }
 

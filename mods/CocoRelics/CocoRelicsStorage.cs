@@ -460,7 +460,6 @@ public static class CocoRelicsStorage
     {
         MerchantCardEntry entry = new(player, inventory: null, Array.Empty<CardModel>(), CardType.Attack);
         CardModel card = CardModel.FromSerializable(save.Card);
-        player.RunState.AddCard(card, player);
         SetMerchantCardCreationResult(entry, new CardCreationResult(card));
         SetMerchantCardIsOnSale(entry, save.IsOnSale);
         SetMerchantCost(entry, save.Cost);

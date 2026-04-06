@@ -6,10 +6,12 @@ using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Daily;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Extensions;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
@@ -38,6 +40,7 @@ namespace BetaDirectConnect;
 public static class BetaDirectConnectPatches
 {
     private static readonly string BeginRunTracePath = Path.Combine(GetModDirectory(), "BetaDirectConnect.beginrun.trace.log");
+    private static bool UseMissingPlayerReadinessForCurrentRun;
 
     private static readonly AccessTools.FieldRef<NMultiplayerHostSubmenu, Control> HostLoadingOverlayRef =
         AccessTools.FieldRefAccess<NMultiplayerHostSubmenu, Control>("_loadingOverlay");
@@ -53,6 +56,12 @@ public static class BetaDirectConnectPatches
 
     private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuButton> MultiplayerLoadButtonRef =
         AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuButton>("_loadButton");
+
+    private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuButton> MultiplayerHostButtonRef =
+        AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuButton>("_hostButton");
+
+    private static readonly AccessTools.FieldRef<NMultiplayerSubmenu, NSubmenuButton> MultiplayerAbandonButtonRef =
+        AccessTools.FieldRefAccess<NMultiplayerSubmenu, NSubmenuButton>("_abandonButton");
 
     private static readonly AccessTools.FieldRef<MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker, INetGameService> NetQualityTrackerNetServiceRef =
         AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Multiplayer.Quality.NetQualityTracker, INetGameService>("_netService");
@@ -189,6 +198,16 @@ public static class BetaDirectConnectPatches
         private static void Postfix(NMultiplayerSubmenu __instance)
         {
             BetaDirectConnectUi.EnsureLoadPanel(__instance);
+            RefreshDirectConnectLoadButtons(__instance);
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerSubmenu), "UpdateButtons")]
+    private static class MultiplayerUpdateButtonsPatch
+    {
+        private static void Postfix(NMultiplayerSubmenu __instance)
+        {
+            RefreshDirectConnectLoadButtons(__instance);
         }
     }
 
@@ -270,7 +289,7 @@ public static class BetaDirectConnectPatches
             BetaDirectConnectConfigService.UpdateHostPort(port);
             MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localPlayerId={localPlayerId}, port={port}");
 
-            ReadSaveResult<SerializableRun> readSaveResult = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
             if (!readSaveResult.Success || readSaveResult.SaveData == null)
             {
                 MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
@@ -282,6 +301,52 @@ public static class BetaDirectConnectPatches
             }
 
             __instance.StartHost(readSaveResult.SaveData);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NMultiplayerSubmenu), "TryAbandonMultiplayerRun")]
+    private static class TryAbandonMultiplayerRunPatch
+    {
+        private static bool Prefix(NMultiplayerSubmenu __instance, ref Task __result)
+        {
+            if (!ShouldUseHostDirectConnect())
+            {
+                return true;
+            }
+
+            __result = TryAbandonDirectConnectMultiplayerRunAsync(__instance);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(NMainMenu), "CheckCommandLineArgs")]
+    private static class MainMenuCheckCommandLineArgsPatch
+    {
+        private static bool Prefix(NMainMenu __instance)
+        {
+            if (!ShouldUseHostDirectConnect())
+            {
+                return true;
+            }
+
+            if (!CommandLineHelper.TryGetValue("fastmp", out string? value) || !string.Equals(value, "load", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            NMultiplayerSubmenu submenu = __instance.OpenMultiplayerSubmenu();
+            ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
+            if (readSaveResult.SaveData != null)
+            {
+                submenu.StartHost(readSaveResult.SaveData);
+            }
+            else
+            {
+                MainFile.Logger.Error($"Failed to load direct-connect multiplayer save for fastmp load. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
+            }
+
             return false;
         }
     }
@@ -366,6 +431,7 @@ public static class BetaDirectConnectPatches
     {
         private static void Prefix(object state, StartRunLobby lobby, bool shouldSave, DateTimeOffset? dailyTime)
         {
+            UseMissingPlayerReadinessForCurrentRun = false;
             TraceBeginRun(
                 $"RunManager.SetUpNewMultiPlayer shouldSave={shouldSave} dailyTime={dailyTime} " +
                 $"localNetId={SafeGetNetId(lobby.NetService)} serviceType={lobby.NetService.Type} players={DescribeLobbyPlayers(lobby.Players)} state={state}");
@@ -377,6 +443,24 @@ public static class BetaDirectConnectPatches
             {
                 TraceBeginRun($"RunManager.SetUpNewMultiPlayer exception: {__exception}");
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedSinglePlayer))]
+    private static class RunManagerSetUpSavedSinglePlayerTracePatch
+    {
+        private static void Prefix()
+        {
+            UseMissingPlayerReadinessForCurrentRun = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+    private static class RunManagerCleanUpPatch
+    {
+        private static void Prefix()
+        {
+            UseMissingPlayerReadinessForCurrentRun = false;
         }
     }
 
@@ -445,12 +529,18 @@ public static class BetaDirectConnectPatches
     {
         private static void Postfix(RunState state, LoadRunLobby lobby)
         {
-            if (lobby.NetService.Type != NetGameType.Host)
-            {
-                return;
-            }
+            UseMissingPlayerReadinessForCurrentRun =
+                lobby.NetService.Platform == PlatformType.None
+                && lobby.NetService.Type == NetGameType.Host
+                && lobby.ConnectedPlayerIds.Count > 0
+                && lobby.ConnectedPlayerIds.Count < state.Players.Count;
 
-            if (lobby.ConnectedPlayerIds.Count >= state.Players.Count)
+            MainFile.Logger.Info(
+                $"Saved multiplayer setup readiness mode active={UseMissingPlayerReadinessForCurrentRun} " +
+                $"connected=[{string.Join(", ", lobby.ConnectedPlayerIds.OrderBy(id => id))}] " +
+                $"saved=[{string.Join(", ", state.Players.Select(player => player.NetId).OrderBy(id => id))}]");
+
+            if (!UseMissingPlayerReadinessForCurrentRun)
             {
                 return;
             }
@@ -531,10 +621,19 @@ public static class BetaDirectConnectPatches
 
             RunState runState = ActChangeRunStateRef(__instance);
             List<int> connectedSlots = GetConnectedPlayerSlots(runState);
-            int localSlot = runState.GetPlayerSlotIndex(LocalContext.NetId!.Value);
+            ulong? localNetId = LocalContext.NetId;
+            if (!localNetId.HasValue)
+            {
+                return true;
+            }
+
+            int localSlot = runState.GetPlayerSlotIndex(localNetId.Value);
             List<bool> readyPlayers = ActChangeReadyPlayersRef(__instance);
 
             __result = connectedSlots.Any(slot => slot != localSlot && (slot >= readyPlayers.Count || !readyPlayers[slot]));
+            TraceReadiness(
+                $"ActChange.IsWaiting local={localNetId.Value} localSlot={localSlot} connectedSlots=[{string.Join(", ", connectedSlots)}] " +
+                $"ready=[{string.Join(", ", readyPlayers.Select((ready, index) => $"{index}:{ready}"))}] result={__result}");
             return false;
         }
     }
@@ -553,9 +652,13 @@ public static class BetaDirectConnectPatches
             List<bool> readyPlayers = ActChangeReadyPlayersRef(__instance);
             int playerSlotIndex = runState.GetPlayerSlotIndex(player);
             readyPlayers[playerSlotIndex] = true;
+            TraceReadiness(
+                $"ActChange.OnPlayerReady player={player.NetId} slot={playerSlotIndex} connectedSlots=[{string.Join(", ", GetConnectedPlayerSlots(runState))}] " +
+                $"ready=[{string.Join(", ", readyPlayers.Select((ready, index) => $"{index}:{ready}"))}]");
 
             if (GetConnectedPlayerSlots(runState).All(slot => slot < readyPlayers.Count && readyPlayers[slot]))
             {
+                TraceReadiness("ActChange.OnPlayerReady all connected players ready; moving to next act");
                 ActChangeMoveToNextActMethod.Invoke(__instance, Array.Empty<object>());
             }
 
@@ -593,13 +696,24 @@ public static class BetaDirectConnectPatches
 
             if (allConnectedVotesReady && netService.Type != NetGameType.Client)
             {
-                MegaCrit.Sts2.Core.Map.MapCoord coord = MapSelectionRngRef(__instance)
-                    .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList())
-                    .Value.coord;
+                MapVote? selectedVote = MapSelectionRngRef(__instance)
+                    .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList());
+                if (!selectedVote.HasValue)
+                {
+                    return false;
+                }
+
+                MegaCrit.Sts2.Core.Map.MapCoord coord = selectedVote.Value.coord;
                 acceptingVotesFromSource.coord = coord;
                 MapSelectionAcceptingVotesFromSourceRef(__instance) = acceptingVotesFromSource;
+                Player? localPlayer = LocalContext.GetMe(runState);
+                if (localPlayer == null)
+                {
+                    return false;
+                }
+
                 MapSelectionActionQueueSynchronizerRef(__instance)
-                    .RequestEnqueue(new MegaCrit.Sts2.Core.GameActions.MoveToMapCoordAction(LocalContext.GetMe(runState), coord));
+                    .RequestEnqueue(new MegaCrit.Sts2.Core.GameActions.MoveToMapCoordAction(localPlayer, coord));
             }
 
             return false;
@@ -638,17 +752,21 @@ public static class BetaDirectConnectPatches
                 return false;
             }
 
-            uint chosenOption = EventRngRef(__instance)
-                .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList())
-                .Value;
+            uint? chosenOption = EventRngRef(__instance)
+                .NextItem(connectedSlots.Select(slot => votes[slot]).Where(vote => vote.HasValue).ToList());
+            if (!chosenOption.HasValue)
+            {
+                return false;
+            }
+
             RunLocationTargetedMessageBuffer messageBuffer = EventMessageBufferRef(__instance);
             netService.SendMessage(new MegaCrit.Sts2.Core.Multiplayer.Messages.Game.Sync.SharedEventOptionChosenMessage
             {
-                optionIndex = chosenOption,
+                optionIndex = chosenOption.Value,
                 pageIndex = currentPageIndex,
                 location = messageBuffer.CurrentLocation
             });
-            EventChooseOptionForSharedEventMethod.Invoke(__instance, new object[] { chosenOption });
+            EventChooseOptionForSharedEventMethod.Invoke(__instance, new object[] { chosenOption.Value });
             return false;
         }
     }
@@ -684,7 +802,13 @@ public static class BetaDirectConnectPatches
             if (predictedVote.HasValue)
             {
                 TreasurePredictedVoteRef(__instance) = null;
-                int localSlot = playerCollection.GetPlayerSlotIndex(LocalContext.GetMe(playerCollection));
+                Player? localPlayer = LocalContext.GetMe(playerCollection);
+                if (localPlayer == null)
+                {
+                    return false;
+                }
+
+                int localSlot = playerCollection.GetPlayerSlotIndex(localPlayer);
                 if (votes[localSlot] != predictedVote.Value)
                 {
                     TreasureVotesChangedEventRef(__instance)?.Invoke();
@@ -946,7 +1070,8 @@ public static class BetaDirectConnectPatches
     private static async Task SaveClientMirrorAsync(AbstractRoom? preFinishedRoom)
     {
         SerializableRun save = RunManager.Instance.ToSave(preFinishedRoom);
-        string path = ToFileSystemPath(SaveManager.Instance.GetProfileScopedPath(Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName)));
+        ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+        string path = GetDirectConnectMultiplayerSavePath(localPlayerId);
         string backupPath = path + ".backup";
 
         string? directory = Path.GetDirectoryName(path);
@@ -964,6 +1089,199 @@ public static class BetaDirectConnectPatches
         await using FileStream stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
         MainFile.Logger.Info($"Mirrored direct-connect client multiplayer save to {path}");
+    }
+
+    private static void RefreshDirectConnectLoadButtons(NMultiplayerSubmenu submenu)
+    {
+        if (!ShouldUseHostDirectConnect())
+        {
+            return;
+        }
+
+        bool hasSave = HasAnyDirectConnectMultiplayerRunSave(PlatformUtil.GetLocalPlayerId(PlatformType.None));
+        MultiplayerHostButtonRef(submenu).Visible = !hasSave;
+        MultiplayerLoadButtonRef(submenu).Visible = hasSave;
+        MultiplayerAbandonButtonRef(submenu).Visible = hasSave;
+    }
+
+    private static bool HasAnyDirectConnectMultiplayerRunSave(ulong playerId)
+    {
+        return HasDirectConnectMultiplayerRunSave(playerId) || HasOfficialMultiplayerRunSave(playerId);
+    }
+
+    private static bool HasDirectConnectMultiplayerRunSave(ulong playerId)
+    {
+        string path = GetDirectConnectMultiplayerSavePath(playerId);
+        return File.Exists(path) || File.Exists(path + ".backup");
+    }
+
+    private static bool HasOfficialMultiplayerRunSave(ulong playerId)
+    {
+        string path = GetOfficialMultiplayerRunSavePath(playerId);
+        return File.Exists(path) || File.Exists(path + ".backup");
+    }
+
+    private static ReadSaveResult<SerializableRun> LoadDirectConnectMultiplayerRunSave(ulong localPlayerId)
+    {
+        string path = GetDirectConnectMultiplayerSavePath(localPlayerId);
+        string backupPath = path + ".backup";
+        string? pathToRead = File.Exists(path) ? path : (File.Exists(backupPath) ? backupPath : null);
+        if (pathToRead == null)
+        {
+            return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileNotFound, "Direct-connect multiplayer save file not found.");
+        }
+
+        try
+        {
+            string json = File.ReadAllText(pathToRead);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileEmpty, "Direct-connect multiplayer save file was empty.");
+            }
+
+            SerializableRun? save = JsonSerializer.Deserialize(json, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
+            if (save == null)
+            {
+                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, "Direct-connect multiplayer save deserialized to null.");
+            }
+
+            SerializableRun canonicalized = RunManager.CanonicalizeSave(save, localPlayerId);
+            return new ReadSaveResult<SerializableRun>(canonicalized, ReadSaveStatus.Success);
+        }
+        catch (JsonException ex)
+        {
+            MainFile.Logger.Error($"Failed to parse direct-connect multiplayer save at {pathToRead}: {ex}");
+            return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Direct-connect multiplayer save validation failed at {pathToRead}: {ex}");
+            return new ReadSaveResult<SerializableRun>(ReadSaveStatus.ValidationFailed, ex.Message);
+        }
+    }
+
+    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localPlayerId)
+    {
+        ReadSaveResult<SerializableRun> directSave = LoadDirectConnectMultiplayerRunSave(localPlayerId);
+        if (directSave.Success || directSave.Status != ReadSaveStatus.FileNotFound)
+        {
+            return directSave;
+        }
+
+        return SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+    }
+
+    private static void DeleteDirectConnectMultiplayerRunSave(ulong playerId)
+    {
+        string path = GetDirectConnectMultiplayerSavePath(playerId);
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            string backupPath = path + ".backup";
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to delete direct-connect multiplayer save for player {playerId}: {ex}");
+        }
+    }
+
+    private static void DeleteOfficialMultiplayerRunSave(ulong playerId)
+    {
+        string path = GetOfficialMultiplayerRunSavePath(playerId);
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            string backupPath = path + ".backup";
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to delete official multiplayer save for player {playerId}: {ex}");
+        }
+    }
+
+    private static async Task TryAbandonDirectConnectMultiplayerRunAsync(NMultiplayerSubmenu submenu)
+    {
+        LocString header = new("main_menu_ui", "ABANDON_RUN_CONFIRMATION.header");
+        LocString body = new("main_menu_ui", "ABANDON_RUN_CONFIRMATION.body");
+        LocString yesButton = new("main_menu_ui", "GENERIC_POPUP.confirm");
+        LocString noButton = new("main_menu_ui", "GENERIC_POPUP.cancel");
+        NGenericPopup? popup = NGenericPopup.Create();
+        if (popup == null)
+        {
+            return;
+        }
+
+        NModalContainer.Instance.Add(popup);
+        if (!(await popup.WaitForConfirmation(body, header, noButton, yesButton)))
+        {
+            return;
+        }
+
+        ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId);
+        if (readSaveResult.Success && readSaveResult.SaveData != null)
+        {
+            try
+            {
+                SerializableRun saveData = readSaveResult.SaveData;
+                SaveManager.Instance.UpdateProgressWithRunData(saveData, victory: false);
+                RunHistoryUtilities.CreateRunHistoryEntry(saveData, victory: false, isAbandoned: true, saveData.PlatformType);
+                if (saveData.DailyTime.HasValue)
+                {
+                    int score = ScoreUtility.CalculateScore(saveData, won: false);
+                    await DailyRunUtility.UploadScore(saveData.DailyTime.Value, score, saveData.Players);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Error($"ERROR: Failed to upload direct-connect run history/metrics: {ex}");
+            }
+        }
+        else
+        {
+            MainFile.Logger.Error($"ERROR: Failed to load direct-connect multiplayer run save: status={readSaveResult.Status}. Deleting current run...");
+        }
+
+        DeleteDirectConnectMultiplayerRunSave(localPlayerId);
+        DeleteOfficialMultiplayerRunSave(localPlayerId);
+        RefreshDirectConnectLoadButtons(submenu);
+    }
+
+    private static string GetDirectConnectMultiplayerSavePath(ulong playerId)
+    {
+        string fileName = $"current_run_mp.direct.{playerId}.save";
+        string godotPath = UserDataPathProvider.GetProfileScopedPath(
+            SaveManager.Instance.CurrentProfileId,
+            Path.Combine(UserDataPathProvider.SavesDir, fileName),
+            PlatformType.None,
+            playerId);
+        return ToFileSystemPath(godotPath);
+    }
+
+    private static string GetOfficialMultiplayerRunSavePath(ulong playerId)
+    {
+        string godotPath = UserDataPathProvider.GetProfileScopedPath(
+            SaveManager.Instance.CurrentProfileId,
+            Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName),
+            PlatformType.None,
+            playerId);
+        return ToFileSystemPath(godotPath);
     }
 
     private static void RebuildSavedRunLobbyForConnectedPlayers(RunState state, LoadRunLobby loadLobby)
@@ -995,11 +1313,34 @@ public static class BetaDirectConnectPatches
 
     private static bool ShouldUseConnectedPlayerCountsForReadiness()
     {
+        if (!UseMissingPlayerReadinessForCurrentRun)
+        {
+            return false;
+        }
+
         INetGameService? netService = RunManager.Instance.NetService;
-        return netService != null
-            && netService.Platform == PlatformType.None
-            && netService.Type == NetGameType.Host
-            && RunManager.Instance.RunLobby != null;
+        if (netService == null
+            || netService.Platform != PlatformType.None
+            || netService.Type != NetGameType.Host
+            || RunManager.Instance.RunLobby == null)
+        {
+            return false;
+        }
+
+        RunState? state = RunManagerStateProperty.GetValue(RunManager.Instance) as RunState;
+        if (state == null)
+        {
+            return false;
+        }
+
+        int connectedCount = RunManager.Instance.RunLobby.ConnectedPlayerIds.Count;
+        bool shouldUse = connectedCount > 0 && connectedCount < state.Players.Count;
+        if (!shouldUse)
+        {
+            UseMissingPlayerReadinessForCurrentRun = false;
+        }
+
+        return shouldUse;
     }
 
     private static bool ShouldUseMissingPeerInputFallback(PeerInputSynchronizer synchronizer, ulong playerId)
@@ -1193,6 +1534,11 @@ public static class BetaDirectConnectPatches
         }
 
         MainFile.Logger.Info($"[BeginRunTrace] {message}");
+    }
+
+    private static void TraceReadiness(string message)
+    {
+        MainFile.Logger.Info($"[ReadinessTrace] {message}");
     }
 
     private static string DescribeLobbyPlayers(System.Collections.Generic.IEnumerable<LobbyPlayer> players)
