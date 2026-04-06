@@ -1,5 +1,7 @@
 using System;
 using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
 using HarmonyLib;
 using Godot;
 using MegaCrit.Sts2.Core.Context;
@@ -8,6 +10,7 @@ using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.Combat;
@@ -40,8 +43,12 @@ public static class CocoRelicsPatches
         AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, int?>("_predictedVote");
     private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, Rng>? TreasureRelicRngRef =
         AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, Rng>("_rng");
+    private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, RelicGrabBag>? SharedRelicGrabBagRef =
+        AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, RelicGrabBag>("_sharedGrabBag");
     private static readonly AccessTools.FieldRef<TreasureRoomRelicSynchronizer, IPlayerCollection>? PlayerCollectionRef =
         AccessTools.FieldRefAccess<TreasureRoomRelicSynchronizer, IPlayerCollection>("_playerCollection");
+    private static readonly MethodInfo? OneOffTryHandleSpoilsMapMethod =
+        AccessTools.Method(typeof(OneOffSynchronizer), "TryHandleSpoilsMap");
 
     public static void SetWatcherRestSitePreviewCompatibility(bool active)
     {
@@ -262,6 +269,8 @@ public static class CocoRelicsPatches
             return;
         }
 
+        AdvanceObservedRoomCreationState(runState, info.RoomType, mapPointType, info.ModelId, coord);
+
         roomType = info.RoomType;
         if (info.RoomType == RoomType.Event)
         {
@@ -328,22 +337,22 @@ public static class CocoRelicsPatches
     }
 
     [HarmonyPatch(typeof(MerchantInventory), nameof(MerchantInventory.CreateForNormalMerchant))]
-    [HarmonyPrefix]
-    private static bool UseObservedShopInventory(Player player, ref MerchantInventory __result)
+    [HarmonyPostfix]
+    private static void UseObservedShopInventory(Player player, ref MerchantInventory __result)
     {
         RunState? runState = CocoRelicsState.GetRunState();
         if (runState == null || !_currentEnteringCoord.HasValue)
         {
-            return true;
+            return;
         }
 
         if (!CocoRelicsState.TryGet(_currentEnteringCoord.Value, runState.CurrentActIndex, out ObservedRoomInfo info) || info.ShopInventory == null)
         {
-            return true;
+            return;
         }
 
         __result = info.ShopInventory;
-        return false;
+        MainFile.Logger.Info($"[CocoRelics] replaced live shop inventory with observed inventory for {_currentEnteringCoord.Value} after advancing live shop RNG.");
     }
 
     [HarmonyPatch(typeof(OneOffSynchronizer), "DoTreasureRoomRewards")]
@@ -351,7 +360,9 @@ public static class CocoRelicsPatches
     private static bool UseObservedTreasureGold(Player player, ref System.Threading.Tasks.Task<int> __result)
     {
         RunState? runState = CocoRelicsState.GetRunState();
-        if (runState == null || runState.CurrentRoom?.RoomType != RoomType.Treasure || !runState.CurrentMapCoord.HasValue)
+        if (runState == null
+            || runState.CurrentRoom?.RoomType != RoomType.Treasure
+            || !runState.CurrentMapCoord.HasValue)
         {
             return true;
         }
@@ -370,7 +381,14 @@ public static class CocoRelicsPatches
     private static bool UseObservedTreasureRelics(TreasureRoomRelicSynchronizer __instance)
     {
         RunState? runState = CocoRelicsState.GetRunState();
-        if (runState == null || !runState.CurrentMapCoord.HasValue || CurrentRelicsRef == null || VotesRef == null || PredictedVoteRef == null || PlayerCollectionRef == null || TreasureRelicRngRef == null)
+        if (runState == null
+            || !runState.CurrentMapCoord.HasValue
+            || CurrentRelicsRef == null
+            || VotesRef == null
+            || PredictedVoteRef == null
+            || SharedRelicGrabBagRef == null
+            || PlayerCollectionRef == null
+            || TreasureRelicRngRef == null)
         {
             return true;
         }
@@ -385,6 +403,8 @@ public static class CocoRelicsPatches
         {
             return true;
         }
+
+        AdvanceTreasureRelicState(__instance, runState, info.TreasurePreview);
 
         var votes = VotesRef(__instance);
         currentRelics = info.TreasurePreview.RelicIds.Select(ModelDb.GetById<RelicModel>).ToList();
@@ -422,7 +442,9 @@ public static class CocoRelicsPatches
     private static bool UseObservedTreasureExtraRewards(Player player, AbstractRoom room, ref System.Threading.Tasks.Task __result)
     {
         RunState? runState = CocoRelicsState.GetRunState();
-        if (runState == null || room.RoomType != RoomType.Treasure || !runState.CurrentMapCoord.HasValue)
+        if (runState == null
+            || room.RoomType != RoomType.Treasure
+            || !runState.CurrentMapCoord.HasValue)
         {
             return true;
         }
@@ -674,6 +696,40 @@ public static class CocoRelicsPatches
         };
     }
 
+    private static void AdvanceObservedRoomCreationState(RunState runState, RoomType roomType, MapPointType mapPointType, ModelId? modelId, MapCoord coord)
+    {
+        if (modelId == null)
+        {
+            return;
+        }
+
+        switch (roomType)
+        {
+            case RoomType.Monster:
+            case RoomType.Elite:
+            case RoomType.Boss:
+            {
+                EncounterModel pulled = runState.Act.PullNextEncounter(roomType);
+                if (pulled.Id != modelId)
+                {
+                    MainFile.Logger.Warn($"[CocoRelics] observed encounter mismatch at {coord}: pulled={pulled.Id.Entry} observed={modelId.Entry}.");
+                }
+                break;
+            }
+            case RoomType.Event:
+            {
+                EventModel pulled = mapPointType == MapPointType.Ancient
+                    ? runState.Act.PullAncient()
+                    : runState.Act.PullNextEvent(runState);
+                if (pulled.Id != modelId)
+                {
+                    MainFile.Logger.Warn($"[CocoRelics] observed event mismatch at {coord}: pulled={pulled.Id.Entry} observed={modelId.Entry}.");
+                }
+                break;
+            }
+        }
+    }
+
     private static AbstractRoom CreateObservedRoom(ObservedRoomInfo info, RunState runState, MapPointType mapPointType)
     {
         return info.RoomType switch
@@ -705,7 +761,66 @@ public static class CocoRelicsPatches
 
     private static async System.Threading.Tasks.Task<int> ApplyObservedTreasureGoldAsync(Player player, int goldAmount)
     {
+        player.PlayerRng.Rewards.NextInt(42, 53);
+        MainFile.Logger.Info($"[CocoRelics] applying observed treasure gold {goldAmount} for player {player.NetId}.");
         await MegaCrit.Sts2.Core.Commands.PlayerCmd.GainGold(goldAmount, player);
-        return goldAmount;
+
+        int extraGold = 0;
+        if (OneOffTryHandleSpoilsMapMethod?.Invoke(RunManager.Instance.OneOffSynchronizer, new object[] { player }) is Task<int> spoilsTask)
+        {
+            extraGold = await spoilsTask;
+        }
+
+        return goldAmount + extraGold;
+    }
+
+    private static void AdvanceTreasureRelicState(TreasureRoomRelicSynchronizer synchronizer, RunState runState, ObservedTreasurePreview preview)
+    {
+        Rng rng = TreasureRelicRngRef!(synchronizer);
+        RelicGrabBag sharedGrabBag = SharedRelicGrabBagRef!(synchronizer);
+        int generatedCount = 0;
+
+        foreach (Player player in runState.Players)
+        {
+            if (!Hook.ShouldGenerateTreasure(runState, player))
+            {
+                continue;
+            }
+
+            RelicRarity rarity = RelicFactory.RollRarity(rng);
+            if (TryConsumeTreasureTutorialRelic(runState, player, sharedGrabBag))
+            {
+                generatedCount++;
+                continue;
+            }
+
+            _ = sharedGrabBag.PullFromFront(rarity, runState);
+            generatedCount++;
+        }
+
+        if (generatedCount != preview.RelicIds.Count)
+        {
+            MainFile.Logger.Warn(
+                $"[CocoRelics] treasure preview relic count mismatch while advancing state. generated={generatedCount} preview={preview.RelicIds.Count}.");
+        }
+        else
+        {
+            MainFile.Logger.Info($"[CocoRelics] advanced live treasure state for {generatedCount} preview relics.");
+        }
+    }
+
+    private static bool TryConsumeTreasureTutorialRelic(RunState runState, Player player, RelicGrabBag sharedGrabBag)
+    {
+        int priorTreasureCount = runState.MapPointHistory
+            .SelectMany(history => history)
+            .Count(entry => entry.HasRoomOfType(RoomType.Treasure));
+
+        if (player.UnlockState.NumberOfRuns != 0 || priorTreasureCount != 0)
+        {
+            return false;
+        }
+
+        sharedGrabBag.Remove<Gorget>();
+        return true;
     }
 }
