@@ -11,6 +11,38 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-GodotAssetImport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$GodotExecutable,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectDirectory,
+
+        [int]$MaxAttempts = 3
+    )
+
+    $lastOutput = @()
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Warning "Godot asset import failed on attempt $($attempt - 1). Retrying ($attempt/$MaxAttempts)..."
+            Start-Sleep -Seconds 2
+        }
+
+        $lastOutput = & $GodotExecutable --headless --path $ProjectDirectory --import 2>&1
+        if ($lastOutput) {
+            $lastOutput | ForEach-Object { Write-Host $_ }
+        }
+
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+    }
+
+    $lastOutputText = if ($lastOutput) { ($lastOutput | Out-String).Trim() } else { "<no output>" }
+    throw "Godot asset import failed after $MaxAttempts attempts.`n$lastOutputText"
+}
+
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $configPath = Join-Path $repoRoot "config.json"
 $projectDir = Join-Path $repoRoot (Join-Path "mods" $ModFolderName)
@@ -48,10 +80,7 @@ Write-Host "[INFO] Project: $projectFile"
 if (-not $SkipGodotImport) {
     if ($godotPath -and (Test-Path -LiteralPath $godotPath)) {
         Write-Host "[INFO] Reimporting Godot assets..."
-        & $godotPath --headless --path $projectDir --import
-        if ($LASTEXITCODE -ne 0) {
-            throw "Godot asset import failed."
-        }
+        Invoke-GodotAssetImport -GodotExecutable $godotPath -ProjectDirectory $projectDir
     }
     elseif ($godotPath) {
         Write-Warning "Configured Godot executable not found: $godotPath"
