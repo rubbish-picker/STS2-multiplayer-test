@@ -92,7 +92,6 @@ public static class CocoRelicsPatches
     {
         private static void Prefix()
         {
-            CocoRelicsConfigService.Reload();
             CocoRelicsMultiplayerSync.InitializeForRun();
             CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
         }
@@ -103,7 +102,6 @@ public static class CocoRelicsPatches
     {
         private static void Prefix()
         {
-            CocoRelicsConfigService.Reload();
             CocoRelicsMultiplayerSync.InitializeForRun();
             CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
         }
@@ -114,7 +112,6 @@ public static class CocoRelicsPatches
     {
         private static void Prefix()
         {
-            CocoRelicsConfigService.Reload();
             CocoRelicsMultiplayerSync.InitializeForRun();
             CocoRelicsMultiplayerSync.BroadcastCurrentConfig();
         }
@@ -125,16 +122,22 @@ public static class CocoRelicsPatches
     {
         private static void Prefix()
         {
-            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: false);
+            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: false, preferHostConfig: false);
         }
     }
 
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewMultiPlayer))]
     private static class SetUpNewMultiPlayerPatch
     {
-        private static void Prefix()
+        private static void Prefix(StartRunLobby lobby)
         {
-            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: true);
+            bool preferHostConfig = lobby.NetService.Type == NetGameType.Client;
+            if (preferHostConfig && !CocoRelicsMultiplayerSync.WaitForHostConfig())
+            {
+                MainFile.Logger.Warn("[CocoRelics] client did not receive host config before SetUpNewMultiPlayer; falling back to local config for now.");
+            }
+
+            CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: true, preferHostConfig);
         }
     }
 
@@ -592,13 +595,10 @@ public static class CocoRelicsPatches
     [HarmonyPostfix]
     private static void GrantDebugRelicOnNewRun(RunManager __instance)
     {
-        if (__instance.NetService?.Type == NetGameType.Client
-            && !CocoRelicsMultiplayerSync.WaitForHostConfig())
-        {
-            MainFile.Logger.Warn("[CocoRelics] client did not receive host config before InitializeNewRun debug relic grant check.");
-        }
-
         CocoRelicsDebugRelicOption debugRelic = CocoRelicsConfigService.GetDebugRelicToGrantAtRunStart();
+        MainFile.Logger.Info(
+            $"[CocoRelics] InitializeNewRun debug relic evaluation on {__instance.NetService?.Type}: " +
+            $"mode={CocoRelicsConfigService.GetMode()} debugStartRelic={CocoRelicsConfigService.GetDebugStartRelic()} grant={debugRelic}.");
         if (debugRelic == CocoRelicsDebugRelicOption.None)
         {
             return;
