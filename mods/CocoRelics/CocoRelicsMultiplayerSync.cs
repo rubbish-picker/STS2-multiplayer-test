@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
@@ -150,6 +151,38 @@ public static class CocoRelicsMultiplayerSync
 
         CocoRelicsConfigService.ApplyHostConfig(config);
         MainFile.Logger.Info($"[CocoRelics] received host config from {senderId}: mode={config.Mode} high_probability_bonus_chance={config.HighProbabilityBonusChance} preview_path_mode={config.PreviewPathMode} debug_start_relic={config.DebugStartRelic}.");
+        CocoRelicsPatches.TryReconcileDebugRelicAfterHostConfigSync();
+    }
+
+    public static bool WaitForHostConfig(int timeoutMs = 5000)
+    {
+        INetGameService? netService = _netService ?? RunManager.Instance.NetService;
+        if (netService?.Type != NetGameType.Client)
+        {
+            return true;
+        }
+
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+        while (DateTime.UtcNow < deadline)
+        {
+            if (CocoRelicsConfigService.SyncedFromHost != null)
+            {
+                return true;
+            }
+
+            try
+            {
+                netService.Update();
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Warn($"[CocoRelics] failed while pumping multiplayer messages during host config wait: {ex.Message}");
+            }
+
+            Thread.Sleep(25);
+        }
+
+        return CocoRelicsConfigService.SyncedFromHost != null;
     }
 
     public static async Task<ObservedRoomInfo> GetOrRequestObservedRoomAsync(MapPoint point, RunState runState)
