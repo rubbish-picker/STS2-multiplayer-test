@@ -120,16 +120,17 @@ public static class CocoRelicsPatches
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewSinglePlayer))]
     private static class SetUpNewSinglePlayerPatch
     {
-        private static void Prefix()
+        private static void Prefix(RunState state)
         {
             CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: false, preferHostConfig: false);
+            GrantConfiguredDebugRelicToPlayers(state, "SetUpNewSinglePlayer");
         }
     }
 
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewMultiPlayer))]
     private static class SetUpNewMultiPlayerPatch
     {
-        private static void Prefix(StartRunLobby lobby)
+        private static void Prefix(RunState state, StartRunLobby lobby)
         {
             bool preferHostConfig = lobby.NetService.Type == NetGameType.Client;
             if (preferHostConfig && !CocoRelicsMultiplayerSync.WaitForHostConfig())
@@ -138,6 +139,7 @@ public static class CocoRelicsPatches
             }
 
             CocoRelicsConfigService.PrepareForNewRun(isMultiplayer: true, preferHostConfig);
+            GrantConfiguredDebugRelicToPlayers(state, $"SetUpNewMultiPlayer/{lobby.NetService.Type}");
         }
     }
 
@@ -599,29 +601,7 @@ public static class CocoRelicsPatches
         MainFile.Logger.Info(
             $"[CocoRelics] InitializeNewRun debug relic evaluation on {__instance.NetService?.Type}: " +
             $"mode={CocoRelicsConfigService.GetMode()} debugStartRelic={CocoRelicsConfigService.GetDebugStartRelic()} grant={debugRelic}.");
-        if (debugRelic == CocoRelicsDebugRelicOption.None)
-        {
-            return;
-        }
-
-        RunState? runState = CocoRelicsState.GetRunState();
-        if (runState == null)
-        {
-            return;
-        }
-
-        foreach (Player player in runState.Players)
-        {
-            RelicModel? relic = CreateConfiguredDebugRelic(debugRelic, player);
-            if (relic == null)
-            {
-                continue;
-            }
-
-            relic.FloorAddedToDeck = 1;
-            player.AddRelicInternal(relic);
-            MainFile.Logger.Info($"Granted debug relic {relic.Id} to player {player.NetId}.");
-        }
+        MainFile.Logger.Info("[CocoRelics] InitializeNewRun grant step is now informational only; debug relics are injected before run setup.");
     }
 
     public static void TryReconcileDebugRelicAfterHostConfigSync()
@@ -655,6 +635,31 @@ public static class CocoRelicsPatches
             relic.FloorAddedToDeck = 1;
             player.AddRelicInternal(relic);
             MainFile.Logger.Info($"[CocoRelics] reconciled debug relic {relic.Id} for player {player.NetId} after host config sync.");
+        }
+    }
+
+    private static void GrantConfiguredDebugRelicToPlayers(RunState state, string source)
+    {
+        CocoRelicsDebugRelicOption debugRelic = CocoRelicsConfigService.GetDebugRelicToGrantAtRunStart();
+        MainFile.Logger.Info(
+            $"[CocoRelics] {source} pre-run debug relic evaluation: " +
+            $"mode={CocoRelicsConfigService.GetMode()} debugStartRelic={CocoRelicsConfigService.GetDebugStartRelic()} grant={debugRelic}.");
+        if (debugRelic == CocoRelicsDebugRelicOption.None)
+        {
+            return;
+        }
+
+        foreach (Player player in state.Players)
+        {
+            RelicModel? relic = CreateConfiguredDebugRelic(debugRelic, player);
+            if (relic == null)
+            {
+                continue;
+            }
+
+            relic.FloorAddedToDeck = 1;
+            player.AddRelicInternal(relic);
+            MainFile.Logger.Info($"[CocoRelics] {source} granted debug relic {relic.Id} to player {player.NetId} before InitializeNewRun.");
         }
     }
 
