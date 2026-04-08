@@ -1,0 +1,7 @@
+.godot/
+bin/
+publish/
+Properties/
+packages/
+*.user
+*cs.uid

@@ -1,0 +1,11 @@
+{
+  "id": "WatcherExtension",
+  "name": "WatcherExtension",
+  "author": "Codex",
+  "description": "Adds missing multiplayer end-turn ping banter for the Watcher mod.",
+  "version": "v0.1.0",
+  "has_pck": false,
+  "has_dll": true,
+  "dependencies": ["BaseLib"],
+  "affects_gameplay": false
+}
