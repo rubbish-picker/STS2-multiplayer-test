@@ -5,12 +5,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using BaseLib.Config;
 using Godot;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 
@@ -74,7 +76,9 @@ public static class MultiplayerCardConfigService
 
     public static MultiplayerCardModConfig? UiConfig { get; private set; }
 
-    public static string ConfigPath => Path.Combine(GetModDirectory(), "MultiplayerCard.runtime.config");
+    private static bool LoggedEffectiveConfigForCurrentRun { get; set; }
+
+    public static string ConfigPath => GetScopedRuntimeConfigPath();
 
     public static void Initialize()
     {
@@ -106,7 +110,12 @@ public static class MultiplayerCardConfigService
 
     public static void Save()
     {
-        Directory.CreateDirectory(GetModDirectory());
+        string? directory = Path.GetDirectoryName(ConfigPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(Current, JsonOptions));
     }
 
@@ -177,6 +186,7 @@ public static class MultiplayerCardConfigService
     public static void ClearRunLockInMemory()
     {
         LockedForRun = null;
+        LoggedEffectiveConfigForCurrentRun = false;
     }
 
     public static void ClearPersistedRunConfig(bool isMultiplayer)
@@ -201,6 +211,27 @@ public static class MultiplayerCardConfigService
     {
         string? location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         return string.IsNullOrWhiteSpace(location) ? AppContext.BaseDirectory : location;
+    }
+
+    public static void LogEffectiveConfigForRunOnce()
+    {
+        if (LoggedEffectiveConfigForCurrentRun)
+        {
+            return;
+        }
+
+        MultiplayerCardRuntimeConfig effective = GetEffectiveConfig();
+        (string source, string location) = DescribeEffectiveConfigSource();
+        string playerId = LocalContext.NetId?.ToString() ?? "unknown";
+        string runType = RunManager.Instance.NetService?.Type.ToString() ?? "unknown";
+
+        MainFile.Logger.Info(
+            $"[MultiplayerCard] run config active for player {playerId} ({runType}): " +
+            $"source={source}, location={location}, mode={effective.Mode}, appearance={effective.AppearanceMode}, " +
+            $"chance={effective.HighProbabilityRewardChance:0.##}, high_probability_card={effective.HighProbabilityRewardCard}, " +
+            $"debug_card={effective.DebugForcedRewardCard}.");
+
+        LoggedEffectiveConfigForCurrentRun = true;
     }
 
     public static MultiplayerCardMode GetMode()
@@ -472,6 +503,52 @@ public static class MultiplayerCardConfigService
         return godotPath.StartsWith("user://", StringComparison.OrdinalIgnoreCase)
             ? ProjectSettings.GlobalizePath(godotPath)
             : godotPath;
+    }
+
+    private static string GetScopedRuntimeConfigPath()
+    {
+        int profileId = GetCurrentProfileIdOrDefault();
+        ulong playerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+        string platformDirectory = UserDataPathProvider.GetPlatformDirectoryName(PlatformType.None);
+        string godotPath = $"user://{platformDirectory}/{playerId}/modded/profile{profileId}/saves/MultiplayerCard.runtime.config";
+        return godotPath.StartsWith("user://", StringComparison.OrdinalIgnoreCase)
+            ? ProjectSettings.GlobalizePath(godotPath)
+            : godotPath;
+    }
+
+    private static int GetCurrentProfileIdOrDefault()
+    {
+        try
+        {
+            return SaveManager.Instance.CurrentProfileId;
+        }
+        catch (InvalidOperationException)
+        {
+            return 1;
+        }
+    }
+
+    private static (string source, string location) DescribeEffectiveConfigSource()
+    {
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+
+        if (LockedForRun != null)
+        {
+            if (RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null)
+            {
+                return ("host_sync_locked_for_run", "network message from host");
+            }
+
+            string runPath = GetRunSessionConfigPath(isMultiplayer);
+            return ("run_locked", runPath);
+        }
+
+        if (RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null)
+        {
+            return ("host_sync", "network message from host");
+        }
+
+        return ("current_runtime", ConfigPath);
     }
 
     private static MultiplayerCardRuntimeConfig CloneConfig(MultiplayerCardRuntimeConfig config)

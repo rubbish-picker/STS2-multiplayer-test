@@ -95,6 +95,7 @@ public static class MultiplayerCardSyncPatches
         private static void Postfix()
         {
             MultiplayerCardConfigService.EnsureRunConfigLoaded();
+            MultiplayerCardConfigService.LogEffectiveConfigForRunOnce();
             MultiplayerCardMultiplayerSync.InitializeForRun();
             MultiplayerCardMultiplayerSync.BroadcastCurrentConfig();
         }
