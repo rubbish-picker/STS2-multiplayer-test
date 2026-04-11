@@ -1,0 +1,10 @@
+{
+  "BETTER_EVENT_SAMPLE_EVENT.title": "遗落的笔记本",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.description": "在碎裂的石缝间，你找到一本风化的笔记本。里面画满了路线草图、奖励记录，以及一条意外实用的页边批注。",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.READ.title": "仔细阅读",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.READ.description": "获得 [gold]20 金币[/gold]。回复 [green]6 点生命[/green]。",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.LEAVE.title": "转身离开",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.LEAVE.description": "不作停留。",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.READ.description": "这些记录干脆、精确，而且非常有用。你顺手收起夹在其中的一小袋金币，脑子也清醒了几分。",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.LEAVE.description": "你合上笔记本，继续前进，不让好奇心耽误脚步。"
+}

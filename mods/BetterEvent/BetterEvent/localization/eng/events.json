@@ -1,0 +1,10 @@
+{
+  "BETTER_EVENT_SAMPLE_EVENT.title": "Forgotten Notebook",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.description": "Between cracked stones, you find a weathered notebook full of route sketches, reward tallies, and one surprisingly practical margin note.",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.READ.title": "Read Closely",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.READ.description": "Gain [gold]20 Gold[/gold]. Heal [green]6 HP[/green].",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.LEAVE.title": "Leave It",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.INITIAL.options.LEAVE.description": "Walk away.",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.READ.description": "The notes are dry, precise, and annoyingly useful. You pocket a loose stash of coins and leave with a clearer head.",
+  "BETTER_EVENT_SAMPLE_EVENT.pages.LEAVE.description": "You close the notebook and move on before curiosity becomes commitment."
+}
