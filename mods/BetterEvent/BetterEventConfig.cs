@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using BaseLib.Config;
 using Godot;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Platform;
+using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 
 namespace BetterEvent;
@@ -31,6 +33,8 @@ public static class BetterEventConfigService
     };
 
     public static BetterEventRuntimeConfig Current { get; private set; } = new();
+    public static BetterEventRuntimeConfig? SyncedFromHost { get; private set; }
+    public static BetterEventRuntimeConfig? LockedForRun { get; private set; }
     public static BetterEventModConfig? UiConfig { get; private set; }
 
     public static string ConfigPath => GetScopedRuntimeConfigPath();
@@ -88,12 +92,92 @@ public static class BetterEventConfigService
 
     public static BetterEventMode GetMode()
     {
-        return ParseMode(Current.Mode);
+        return ParseMode(GetEffectiveConfig().Mode);
     }
 
     public static bool IsDebugMode()
     {
         return GetMode() == BetterEventMode.Debug;
+    }
+
+    public static BetterEventRuntimeConfig GetEffectiveConfig()
+    {
+        if (LockedForRun != null)
+        {
+            return LockedForRun;
+        }
+
+        return RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null
+            ? SyncedFromHost
+            : Current;
+    }
+
+    public static void ApplyHostConfig(BetterEventRuntimeConfig config)
+    {
+        SyncedFromHost = CloneConfig(config);
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? true;
+        LockForRun(SyncedFromHost, persistToDisk: false, isMultiplayer);
+    }
+
+    public static void ClearHostConfig()
+    {
+        SyncedFromHost = null;
+    }
+
+    public static void PrepareForNewRun(bool isMultiplayer)
+    {
+        if (RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null)
+        {
+            LockForRun(SyncedFromHost, persistToDisk: false, isMultiplayer);
+            return;
+        }
+
+        LockForRun(Current, persistToDisk: true, isMultiplayer);
+    }
+
+    public static void EnsureRunConfigLoaded()
+    {
+        if (LockedForRun != null)
+        {
+            return;
+        }
+
+        bool isMultiplayer = RunManager.Instance.NetService?.Type.IsMultiplayer() ?? false;
+        BetterEventRuntimeConfig? persisted = TryLoadRunConfigFromDisk(isMultiplayer);
+        if (persisted != null)
+        {
+            LockForRun(persisted, persistToDisk: false, isMultiplayer);
+            return;
+        }
+
+        if (RunManager.Instance.NetService?.Type == NetGameType.Client && SyncedFromHost != null)
+        {
+            LockForRun(SyncedFromHost, persistToDisk: false, isMultiplayer);
+            return;
+        }
+
+        LockForRun(Current, persistToDisk: true, isMultiplayer);
+    }
+
+    public static void ClearRunLockInMemory()
+    {
+        LockedForRun = null;
+    }
+
+    public static void ClearPersistedRunConfig(bool isMultiplayer)
+    {
+        string path = GetRunSessionConfigPath(isMultiplayer);
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to clear persisted BetterEvent run config: {ex}");
+        }
     }
 
     public static BetterEventMode ParseMode(string? raw)
@@ -152,6 +236,61 @@ public static class BetterEventConfigService
         {
             return 0;
         }
+    }
+
+    private static void LockForRun(BetterEventRuntimeConfig config, bool persistToDisk, bool isMultiplayer)
+    {
+        LockedForRun = CloneConfig(config);
+        if (!persistToDisk)
+        {
+            return;
+        }
+
+        string path = GetRunSessionConfigPath(isMultiplayer);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(path, JsonSerializer.Serialize(LockedForRun, JsonOptions));
+    }
+
+    private static BetterEventRuntimeConfig? TryLoadRunConfigFromDisk(bool isMultiplayer)
+    {
+        string path = GetRunSessionConfigPath(isMultiplayer);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            string json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<BetterEventRuntimeConfig>(json, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to load persisted BetterEvent run config: {ex}");
+            return null;
+        }
+    }
+
+    private static string GetRunSessionConfigPath(bool isMultiplayer)
+    {
+        string suffix = isMultiplayer ? "multiplayer" : "singleplayer";
+        string? directory = Path.GetDirectoryName(ConfigPath);
+        return string.IsNullOrWhiteSpace(directory)
+            ? Path.Combine(GetModDirectory(), $"BetterEvent.run.{suffix}.config")
+            : Path.Combine(directory, $"BetterEvent.run.{suffix}.config");
+    }
+
+    private static BetterEventRuntimeConfig CloneConfig(BetterEventRuntimeConfig source)
+    {
+        return new BetterEventRuntimeConfig
+        {
+            Mode = source.Mode,
+        };
     }
 }
 
