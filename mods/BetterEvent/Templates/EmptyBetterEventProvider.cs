@@ -19,5 +19,6 @@ internal sealed class EmptyBetterEventProvider : IBetterEventProvider
 
         _ = typeof(Overgrowth);
         yield return BetterEventRegistration.Shared<BetterEventSampleEvent>("sample-shared-event");
+        yield return BetterEventRegistration.Shared<BetterEventHallOfEchoes>("hall-of-echoes");
     }
 }
