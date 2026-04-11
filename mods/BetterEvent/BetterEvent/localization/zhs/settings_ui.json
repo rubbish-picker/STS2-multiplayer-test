@@ -1,0 +1,6 @@
+{
+  "BETTEREVENT-GENERAL.title": "常规",
+  "BETTEREVENT-MODE.title": "事件池模式",
+  "BETTEREVENT-MODE.Vanilla": "混入原版事件",
+  "BETTEREVENT-MODE.Debug": "仅出现 BetterEvent 事件"
+}
