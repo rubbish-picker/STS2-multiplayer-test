@@ -262,7 +262,10 @@ public static class BetaDirectConnectPatches
             }
 
             int port = BetaDirectConnectUi.GetConfiguredHostPort(__instance);
+            string displayId = BetaDirectConnectUi.GetConfiguredHostDisplayId(__instance);
+            ulong? netIdOverride = BetaDirectConnectUi.GetConfiguredHostNetIdOverride(__instance);
             BetaDirectConnectConfigService.UpdateHostPort(port);
+            BetaDirectConnectConfigService.UpdateIdentitySettings(displayId, netIdOverride?.ToString() ?? string.Empty, netIdOverride);
             TaskHelper.RunSafely(StartHostAsyncDirect(gameMode, HostLoadingOverlayRef(__instance), HostStackRef(__instance), port));
             return false;
         }
@@ -293,15 +296,16 @@ public static class BetaDirectConnectPatches
                 return true;
             }
 
-            ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+            ulong localPlayerId = GetLocalAccountId();
+            ulong localNetId = GetPreferredLocalNetIdForLoad();
             int port = BetaDirectConnectUi.GetConfiguredLoadPort(__instance);
             BetaDirectConnectConfigService.UpdateHostPort(port);
-            MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localPlayerId={localPlayerId}, port={port}");
+            MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localAccountId={localPlayerId}, localNetId={localNetId}, port={port}");
 
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
             if (!readSaveResult.Success || readSaveResult.SaveData == null)
             {
-                MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
+                MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localAccountId={localPlayerId}, localNetId={localNetId}");
                 MultiplayerLoadButtonRef(__instance).Disable();
                 ShowSimpleError(
                     "Invalid Multiplayer Save / 多人存档无效",
@@ -345,15 +349,16 @@ public static class BetaDirectConnectPatches
             }
 
             NMultiplayerSubmenu submenu = __instance.OpenMultiplayerSubmenu();
-            ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
+            ulong localPlayerId = GetLocalAccountId();
+            ulong localNetId = GetPreferredLocalNetIdForLoad();
+            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
             if (readSaveResult.SaveData != null)
             {
                 submenu.StartHost(readSaveResult.SaveData);
             }
             else
             {
-                MainFile.Logger.Error($"Failed to load direct-connect multiplayer save for fastmp load. status={readSaveResult.Status}, localPlayerId={localPlayerId}");
+                MainFile.Logger.Error($"Failed to load direct-connect multiplayer save for fastmp load. status={readSaveResult.Status}, localAccountId={localPlayerId}, localNetId={localNetId}");
             }
 
             return false;
@@ -365,7 +370,11 @@ public static class BetaDirectConnectPatches
     {
         private static void Postfix(ulong playerId, ref string __result)
         {
-            if (playerId == 1UL && string.Equals(__result, "Test Host", StringComparison.Ordinal))
+            if (DirectConnectIdentityService.TryGetDisplayName(playerId, out string displayId))
+            {
+                __result = displayId;
+            }
+            else if (playerId == 1UL && string.Equals(__result, "Test Host", StringComparison.Ordinal))
             {
                 __result = playerId.ToString();
             }
@@ -381,7 +390,7 @@ public static class BetaDirectConnectPatches
     {
         private static bool Prefix(ref ulong __result)
         {
-            __result = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+            __result = DirectConnectIdentityService.GetEffectiveHostNetId();
             return false;
         }
     }
@@ -463,6 +472,7 @@ public static class BetaDirectConnectPatches
         {
             UseMissingPlayerReadinessForCurrentRun = false;
             LoadedRunStartExplicitlyRequested = false;
+            DirectConnectIdentityService.ClearRuntimeState();
         }
     }
 
@@ -1043,7 +1053,7 @@ public static class BetaDirectConnectPatches
         }
     }
 
-    public static void TryJoinFromPanel(NJoinFriendScreen screen, LineEdit ipInput, LineEdit portInput, LineEdit playerIdInput)
+    public static void TryJoinFromPanel(NJoinFriendScreen screen, LineEdit ipInput, LineEdit portInput, LineEdit displayIdInput, LineEdit netIdOverrideInput)
     {
         MainFile.Logger.Info("TryJoinFromPanel invoked.");
 
@@ -1054,23 +1064,32 @@ public static class BetaDirectConnectPatches
             return;
         }
 
-        string playerIdText = string.IsNullOrWhiteSpace(playerIdInput.Text)
-            ? BetaDirectConnectConfigService.EffectivePlayerIdText
-            : playerIdInput.Text.Trim();
-        ulong playerId = BetaDirectConnectConfigService.ParsePlayerIdInput(playerIdText);
-        if (playerId == 0)
+        string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(displayIdInput.Text);
+        if (string.IsNullOrWhiteSpace(displayId))
         {
-            ShowSimpleError("Invalid Player ID / 玩家 ID 无效", "Player ID cannot be empty. / 玩家 ID 不能为空。");
+            ShowSimpleError("Invalid Display Name / 显示名称无效", "Display Name cannot be empty. / 显示名称不能为空。");
+            return;
+        }
+
+        ulong? netIdOverride;
+        try
+        {
+            netIdOverride = BetaDirectConnectConfigService.ParseNetIdOverrideInput(netIdOverrideInput.Text);
+        }
+        catch (FormatException)
+        {
+            ShowSimpleError("Invalid Net ID / 联机身份 ID 无效", "Net ID override must be an unsigned integer, or left blank. / 联机身份 ID 覆盖必须是无符号整数，或留空。");
             return;
         }
 
         port = BetaDirectConnectConfigService.NormalizePort(port);
         portInput.Text = port.ToString();
-        playerIdInput.Text = playerIdText;
+        displayIdInput.Text = displayId;
+        netIdOverrideInput.Text = BetaDirectConnectConfigService.NormalizeNetIdOverrideText(netIdOverrideInput.Text);
 
-        BetaDirectConnectConfigService.UpdateJoinSettings(ip, port, playerIdText, playerId);
-        MainFile.Logger.Info($"Direct join requested. ip={ip}, port={port}, playerIdText={playerIdText}, playerId={playerId}");
-        TaskHelper.RunSafely(screen.JoinGameAsync(new RetryingDirectConnectInitializer(playerIdText, ip, (ushort)port)));
+        BetaDirectConnectConfigService.UpdateJoinSettings(ip, port, displayId, netIdOverrideInput.Text, netIdOverride);
+        MainFile.Logger.Info($"Direct join requested. ip={ip}, port={port}, displayId={displayId}, requestedNetId={netIdOverride?.ToString() ?? "<auto>"}");
+        TaskHelper.RunSafely(screen.JoinGameAsync(new RetryingDirectConnectInitializer(ip, (ushort)port)));
     }
 
     private static bool ShouldReplaceJoinPageWithDirectConnect()
@@ -1088,11 +1107,15 @@ public static class BetaDirectConnectPatches
         loadingOverlay.Visible = true;
         try
         {
+            string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
+            ulong localNetId = DirectConnectIdentityService.PrepareLocalHostNetId();
+            BetaDirectConnectConfigService.UpdateIdentitySettings(displayId, BetaDirectConnectConfigService.Current.NetIdOverrideText, BetaDirectConnectConfigService.Current.NetIdOverride);
             MainFile.Logger.Info($"Starting direct ENet host. mode={gameMode}, port={port}");
             NetHostGameService netService = new();
             NetErrorInfo? netErrorInfo = netService.StartENetHost((ushort)port, 4);
             if (!netErrorInfo.HasValue)
             {
+                DirectConnectIdentityService.RegisterNewLobbyHost(netService, localNetId, displayId);
                 MainFile.Logger.Info($"Direct ENet host started successfully on port {port}");
                 switch (gameMode)
                 {
@@ -1152,6 +1175,10 @@ public static class BetaDirectConnectPatches
         Control loadingOverlay = MultiplayerLoadingOverlayRef(submenu);
         NSubmenuStack stack = MultiplayerStackRef(submenu);
         int port = BetaDirectConnectConfigService.Current.HostPort;
+        string displayId = BetaDirectConnectUi.GetConfiguredLoadDisplayId(submenu);
+        ulong? requestedNetId = BetaDirectConnectUi.GetConfiguredLoadNetIdOverride(submenu);
+        BetaDirectConnectConfigService.UpdateIdentitySettings(displayId, requestedNetId?.ToString() ?? string.Empty, requestedNetId);
+        ulong localNetId = DirectConnectIdentityService.PrepareLocalHostNetId(run.Players.Select(player => player.NetId));
         LoadedRunStartExplicitlyRequested = false;
         loadingOverlay.Visible = true;
         try
@@ -1161,6 +1188,7 @@ public static class BetaDirectConnectPatches
             NetErrorInfo? netErrorInfo = netService.StartENetHost((ushort)port, 4);
             if (!netErrorInfo.HasValue)
             {
+                DirectConnectIdentityService.RegisterLoadedLobbyHost(netService, localNetId, displayId, run.Players.Select(player => player.NetId));
                 MainFile.Logger.Info($"Direct ENet loaded-run host started successfully on port {port}");
                 if (run.Modifiers.Count > 0)
                 {
@@ -1218,7 +1246,7 @@ public static class BetaDirectConnectPatches
     private static async Task SaveClientMirrorAsync(AbstractRoom? preFinishedRoom)
     {
         SerializableRun save = RunManager.Instance.ToSave(preFinishedRoom);
-        ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+        ulong localPlayerId = GetLocalAccountId();
         string path = GetDirectConnectMultiplayerSavePath(localPlayerId);
         string backupPath = path + ".backup";
 
@@ -1246,15 +1274,36 @@ public static class BetaDirectConnectPatches
             return;
         }
 
-        bool hasSave = HasAnyDirectConnectMultiplayerRunSave(PlatformUtil.GetLocalPlayerId(PlatformType.None));
+        bool hasSave = HasAnyDirectConnectMultiplayerRunSave(GetLocalAccountId(), GetPreferredLocalNetIdForLoad());
         MultiplayerHostButtonRef(submenu).Visible = !hasSave;
         MultiplayerLoadButtonRef(submenu).Visible = hasSave;
         MultiplayerAbandonButtonRef(submenu).Visible = hasSave;
     }
 
-    private static bool HasAnyDirectConnectMultiplayerRunSave(ulong playerId)
+    private static bool HasAnyDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId)
     {
-        return HasDirectConnectMultiplayerRunSave(playerId) || HasOfficialMultiplayerRunSave(playerId);
+        return HasDirectConnectMultiplayerRunSave(localAccountId) || HasOfficialMultiplayerRunSave(localNetId);
+    }
+
+    private static ulong GetLocalAccountId()
+    {
+        return BetaDirectConnectConfigService.EffectiveClientId;
+    }
+
+    private static ulong GetPreferredLocalNetIdForLoad()
+    {
+        ulong? requestedNetId = BetaDirectConnectConfigService.Current.NetIdOverride;
+        if (requestedNetId.HasValue)
+        {
+            return requestedNetId.Value;
+        }
+
+        if (BetaDirectConnectConfigService.Current.LastAssignedNetId > 0UL)
+        {
+            return BetaDirectConnectConfigService.Current.LastAssignedNetId;
+        }
+
+        return DirectConnectIdentityService.GetEffectiveHostNetId();
     }
 
     private static bool HasDirectConnectMultiplayerRunSave(ulong playerId)
@@ -1269,9 +1318,9 @@ public static class BetaDirectConnectPatches
         return File.Exists(path) || File.Exists(path + ".backup");
     }
 
-    private static ReadSaveResult<SerializableRun> LoadDirectConnectMultiplayerRunSave(ulong localPlayerId)
+    private static ReadSaveResult<SerializableRun> LoadDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId)
     {
-        string path = GetDirectConnectMultiplayerSavePath(localPlayerId);
+        string path = GetDirectConnectMultiplayerSavePath(localAccountId);
         string backupPath = path + ".backup";
         string? pathToRead = File.Exists(path) ? path : (File.Exists(backupPath) ? backupPath : null);
         if (pathToRead == null)
@@ -1293,7 +1342,7 @@ public static class BetaDirectConnectPatches
                 return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, "Direct-connect multiplayer save deserialized to null.");
             }
 
-            SerializableRun canonicalized = RunManager.CanonicalizeSave(save, localPlayerId);
+            SerializableRun canonicalized = RunManager.CanonicalizeSave(save, localNetId);
             return new ReadSaveResult<SerializableRun>(canonicalized, ReadSaveStatus.Success);
         }
         catch (JsonException ex)
@@ -1308,26 +1357,26 @@ public static class BetaDirectConnectPatches
         }
     }
 
-    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localPlayerId, bool preferOfficial = false)
+    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId, bool preferOfficial = false)
     {
         if (preferOfficial)
         {
-            ReadSaveResult<SerializableRun> officialSave = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+            ReadSaveResult<SerializableRun> officialSave = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localNetId);
             if (officialSave.Success || officialSave.Status != ReadSaveStatus.FileNotFound)
             {
                 return officialSave;
             }
 
-            return LoadDirectConnectMultiplayerRunSave(localPlayerId);
+            return LoadDirectConnectMultiplayerRunSave(localAccountId, localNetId);
         }
 
-        ReadSaveResult<SerializableRun> directSave = LoadDirectConnectMultiplayerRunSave(localPlayerId);
+        ReadSaveResult<SerializableRun> directSave = LoadDirectConnectMultiplayerRunSave(localAccountId, localNetId);
         if (directSave.Success || directSave.Status != ReadSaveStatus.FileNotFound)
         {
             return directSave;
         }
 
-        return SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localPlayerId);
+        return SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localNetId);
     }
 
     private static void DeleteDirectConnectMultiplayerRunSave(ulong playerId)
@@ -1386,14 +1435,20 @@ public static class BetaDirectConnectPatches
             return;
         }
 
+        if (NModalContainer.Instance == null)
+        {
+            return;
+        }
+
         NModalContainer.Instance.Add(popup);
         if (!(await popup.WaitForConfirmation(body, header, noButton, yesButton)))
         {
             return;
         }
 
-        ulong localPlayerId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
-        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, preferOfficial: true);
+        ulong localPlayerId = GetLocalAccountId();
+        ulong localNetId = GetPreferredLocalNetIdForLoad();
+        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
         if (readSaveResult.Success && readSaveResult.SaveData != null)
         {
             try
@@ -1418,7 +1473,7 @@ public static class BetaDirectConnectPatches
         }
 
         DeleteDirectConnectMultiplayerRunSave(localPlayerId);
-        DeleteOfficialMultiplayerRunSave(localPlayerId);
+        DeleteOfficialMultiplayerRunSave(localNetId);
         RefreshDirectConnectLoadButtons(submenu);
     }
 

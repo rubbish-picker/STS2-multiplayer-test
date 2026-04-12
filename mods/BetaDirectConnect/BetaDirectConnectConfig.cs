@@ -21,11 +21,17 @@ public sealed class BetaDirectConnectRuntimeConfig
     [JsonPropertyName("join_port")]
     public int JoinPort { get; set; } = 33771;
 
-    [JsonPropertyName("player_id")]
-    public ulong PlayerId { get; set; } = 0;
+    [JsonPropertyName("display_id")]
+    public string DisplayId { get; set; } = "";
 
-    [JsonPropertyName("player_id_text")]
-    public string PlayerIdText { get; set; } = "";
+    [JsonPropertyName("net_id_override")]
+    public ulong? NetIdOverride { get; set; }
+
+    [JsonPropertyName("net_id_override_text")]
+    public string NetIdOverrideText { get; set; } = "";
+
+    [JsonPropertyName("last_assigned_net_id")]
+    public ulong LastAssignedNetId { get; set; }
 }
 
 public static class BetaDirectConnectConfigService
@@ -38,16 +44,16 @@ public static class BetaDirectConnectConfigService
 
     public static BetaDirectConnectRuntimeConfig Current { get; private set; } = new();
 
-    public static ulong EffectivePlayerId => PlatformUtil.GetLocalPlayerId(PlatformType.None);
+    public static ulong EffectiveClientId => PlatformUtil.GetLocalPlayerId(PlatformType.None);
 
-    public static string EffectivePlayerIdText => EffectivePlayerId.ToString();
+    public static string DefaultDisplayId => EffectiveClientId.ToString();
 
     public static string ConfigPath => Path.Combine(GetModDirectory(), "BetaDirectConnect.runtime.config");
 
     public static void Initialize()
     {
         Reload();
-        MainFile.Logger.Info($"BetaDirectConnect effective player ID: {EffectivePlayerId}");
+        MainFile.Logger.Info($"BetaDirectConnect effective client ID: {EffectiveClientId}");
     }
 
     public static void Reload()
@@ -85,10 +91,27 @@ public static class BetaDirectConnectConfigService
         Save();
     }
 
-    public static void UpdateJoinSettings(string ip, int port, string playerIdText, ulong playerId)
+    public static void UpdateJoinSettings(string ip, int port, string displayId, string netIdOverrideText, ulong? netIdOverride)
     {
         Current.JoinIp = string.IsNullOrWhiteSpace(ip) ? "127.0.0.1" : ip.Trim();
         Current.JoinPort = NormalizePort(port);
+        Current.DisplayId = NormalizeDisplayId(displayId);
+        Current.NetIdOverride = NormalizeNetId(netIdOverride);
+        Current.NetIdOverrideText = NormalizeNetIdOverrideText(netIdOverrideText);
+        Save();
+    }
+
+    public static void UpdateIdentitySettings(string displayId, string netIdOverrideText, ulong? netIdOverride)
+    {
+        Current.DisplayId = NormalizeDisplayId(displayId);
+        Current.NetIdOverride = NormalizeNetId(netIdOverride);
+        Current.NetIdOverrideText = NormalizeNetIdOverrideText(netIdOverrideText);
+        Save();
+    }
+
+    public static void UpdateLastAssignedNetId(ulong netId)
+    {
+        Current.LastAssignedNetId = NormalizeNetId(netId) ?? 0UL;
         Save();
     }
 
@@ -97,9 +120,14 @@ public static class BetaDirectConnectConfigService
         return Math.Clamp(port, 1, 65535);
     }
 
-    public static ulong NormalizePlayerId(ulong playerId)
+    public static ulong? NormalizeNetId(ulong? playerId)
     {
-        return playerId == 0UL ? 0UL : playerId;
+        if (!playerId.HasValue || playerId.Value == 0UL)
+        {
+            return null;
+        }
+
+        return playerId.Value;
     }
 
     private static void NormalizeInPlace(BetaDirectConnectRuntimeConfig config)
@@ -107,24 +135,41 @@ public static class BetaDirectConnectConfigService
         config.HostPort = NormalizePort(config.HostPort);
         config.JoinPort = NormalizePort(config.JoinPort);
         config.JoinIp = string.IsNullOrWhiteSpace(config.JoinIp) ? "127.0.0.1" : config.JoinIp.Trim();
-        config.PlayerId = 0UL;
-        config.PlayerIdText = string.Empty;
+        config.DisplayId = NormalizeDisplayId(config.DisplayId);
+        config.NetIdOverride = NormalizeNetId(config.NetIdOverride);
+        config.NetIdOverrideText = NormalizeNetIdOverrideText(config.NetIdOverrideText);
+        config.LastAssignedNetId = NormalizeNetId(config.LastAssignedNetId) ?? 0UL;
     }
 
-    public static ulong ParsePlayerIdInput(string input)
+    public static string NormalizeDisplayId(string input)
     {
-        string normalized = string.IsNullOrWhiteSpace(input) ? string.Empty : input.Trim();
+        return string.IsNullOrWhiteSpace(input) ? DefaultDisplayId : input.Trim();
+    }
+
+    public static ulong? ParseNetIdOverrideInput(string input)
+    {
+        string normalized = NormalizeNetIdOverrideText(input);
         if (string.IsNullOrEmpty(normalized))
         {
-            return 0UL;
+            return null;
         }
 
-        if (ulong.TryParse(normalized, out ulong numericPlayerId))
+        if (!ulong.TryParse(normalized, out ulong numericPlayerId))
         {
-            return NormalizePlayerId(numericPlayerId);
+            throw new FormatException("Net ID override must be an unsigned integer.");
         }
 
-        byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        return NormalizeNetId(numericPlayerId);
+    }
+
+    public static string NormalizeNetIdOverrideText(string input)
+    {
+        return string.IsNullOrWhiteSpace(input) ? string.Empty : input.Trim();
+    }
+
+    public static ulong CreateStableAutomaticNetIdSeed()
+    {
+        byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"client:{EffectiveClientId}"));
         ulong hashedPlayerId = BitConverter.ToUInt64(bytes, 0);
         if (BitConverter.IsLittleEndian)
         {
@@ -140,9 +185,19 @@ public static class BetaDirectConnectConfigService
         return hashedPlayerId;
     }
 
-    public static bool IsNumericPlayerIdText(string input)
+    public static ulong? GetRequestedNetId()
     {
-        return !string.IsNullOrWhiteSpace(input) && ulong.TryParse(input.Trim(), out _);
+        if (Current.NetIdOverride.HasValue)
+        {
+            return Current.NetIdOverride.Value;
+        }
+
+        if (Current.LastAssignedNetId > 0UL)
+        {
+            return Current.LastAssignedNetId;
+        }
+
+        return null;
     }
 
     private static string GetModDirectory()

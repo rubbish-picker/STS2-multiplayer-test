@@ -80,6 +80,16 @@ public static class BetaDirectConnectUi
         return port;
     }
 
+    public static string GetConfiguredHostDisplayId(NMultiplayerHostSubmenu screen)
+    {
+        return GetNormalizedText(screen.GetNodeOrNull<LineEdit>($"{HostPanelName}/Column/DisplayIdInput"), BetaDirectConnectConfigService.Current.DisplayId);
+    }
+
+    public static ulong? GetConfiguredHostNetIdOverride(NMultiplayerHostSubmenu screen)
+    {
+        return GetConfiguredOptionalNetId(screen.GetNodeOrNull<LineEdit>($"{HostPanelName}/Column/NetIdOverrideInput"));
+    }
+
     public static int GetConfiguredLoadPort(NMultiplayerSubmenu screen)
     {
         if (screen.GetNodeOrNull<LineEdit>($"{LoadPanelName}/Column/PortInput") is not LineEdit portInput)
@@ -95,6 +105,16 @@ public static class BetaDirectConnectUi
         port = BetaDirectConnectConfigService.NormalizePort(port);
         portInput.Text = port.ToString();
         return port;
+    }
+
+    public static string GetConfiguredLoadDisplayId(NMultiplayerSubmenu screen)
+    {
+        return GetNormalizedText(screen.GetNodeOrNull<LineEdit>($"{LoadPanelName}/Column/DisplayIdInput"), BetaDirectConnectConfigService.Current.DisplayId);
+    }
+
+    public static ulong? GetConfiguredLoadNetIdOverride(NMultiplayerSubmenu screen)
+    {
+        return GetConfiguredOptionalNetId(screen.GetNodeOrNull<LineEdit>($"{LoadPanelName}/Column/NetIdOverrideInput"));
     }
 
     private static Control BuildJoinPanel(NJoinFriendScreen screen)
@@ -121,13 +141,14 @@ public static class BetaDirectConnectUi
 
         Label title = CreateLabel("Direct Connect / 直连加入", 34);
         Label desc = CreateLabel(
-            "Fill in host address, port, and player ID. Player ID supports any text input; numeric IDs are used directly, while text IDs are converted into a stable internal ulong.",
+            "Fill in host address, port, display name, and optionally override the in-room Net ID. Leave Net ID blank to let the host assign one.",
             22);
         desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 
         NMegaLineEdit ipInput = CreateLineEdit("IpInput", BetaDirectConnectConfigService.Current.JoinIp, "Host IP or domain / 房主 IP 或域名");
         NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.JoinPort.ToString(), "Port / 端口，默认 33771");
-        NMegaLineEdit playerIdInput = CreateLineEdit("PlayerIdInput", BetaDirectConnectConfigService.EffectivePlayerIdText, "Player ID / 玩家 ID，可输入任意字符串");
+        NMegaLineEdit displayIdInput = CreateLineEdit("DisplayIdInput", BetaDirectConnectConfigService.Current.DisplayId, "Display Name / 显示名称");
+        NMegaLineEdit netIdOverrideInput = CreateLineEdit("NetIdOverrideInput", BetaDirectConnectConfigService.Current.NetIdOverrideText, "Optional Net ID Override / 可选联机身份 ID");
         Button connectButton = new()
         {
             Name = "ConnectButton",
@@ -136,7 +157,7 @@ public static class BetaDirectConnectUi
             FocusMode = Control.FocusModeEnum.All,
         };
         Label hint = CreateLabel(
-            "Numeric IDs are exact. Text IDs are converted to a stable internal ulong for the current protocol. Please avoid using very similar test IDs across many players if you want the lowest collision risk.",
+            "Display Name only affects UI. Net ID is the actual multiplayer identity. Leave Net ID blank for normal host-assigned play; only fill it when you need to reclaim or swap an in-run identity.",
             18);
         hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         hint.Modulate = new Color(0.85f, 0.85f, 0.8f);
@@ -144,29 +165,35 @@ public static class BetaDirectConnectUi
         connectButton.Pressed += () =>
         {
             MainFile.Logger.Info("Connect button pressed.");
-            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, playerIdInput);
+            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, displayIdInput, netIdOverrideInput);
         };
-        playerIdInput.TextSubmitted += _ =>
+        displayIdInput.TextSubmitted += _ =>
         {
-            MainFile.Logger.Info("Player ID submit triggered direct join.");
-            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, playerIdInput);
+            MainFile.Logger.Info("Display ID submit triggered direct join.");
+            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, displayIdInput, netIdOverrideInput);
+        };
+        netIdOverrideInput.TextSubmitted += _ =>
+        {
+            MainFile.Logger.Info("Net ID override submit triggered direct join.");
+            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, displayIdInput, netIdOverrideInput);
         };
         portInput.TextSubmitted += _ =>
         {
             MainFile.Logger.Info("Port submit triggered direct join.");
-            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, playerIdInput);
+            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, displayIdInput, netIdOverrideInput);
         };
         ipInput.TextSubmitted += _ =>
         {
             MainFile.Logger.Info("IP submit triggered direct join.");
-            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, playerIdInput);
+            BetaDirectConnectPatches.TryJoinFromPanel(screen, ipInput, portInput, displayIdInput, netIdOverrideInput);
         };
 
         column.AddChild(title);
         column.AddChild(desc);
         column.AddChild(CreateFieldBlock("Host Address / 房主地址", ipInput));
         column.AddChild(CreateFieldBlock("Port / 端口", portInput));
-        column.AddChild(CreateFieldBlock("Player ID / 玩家 ID", playerIdInput));
+        column.AddChild(CreateFieldBlock("Display Name / 显示名称", displayIdInput));
+        column.AddChild(CreateFieldBlock("Net ID Override / 联机身份 ID 覆盖", netIdOverrideInput));
         column.AddChild(connectButton);
         column.AddChild(hint);
 
@@ -197,15 +224,19 @@ public static class BetaDirectConnectUi
 
         Label title = CreateLabel("Beta Direct Connect / Beta 直连房间", 26);
         Label desc = CreateLabel(
-            "Direct-connect hosting opens an ENet room on this port. Share your IP/domain and port with testers.",
+            "Direct-connect hosting opens an ENet room on this port. Set the display name shown to others and optionally pin your own multiplayer Net ID.",
             18);
         desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         desc.Modulate = new Color(0.85f, 0.85f, 0.8f);
         NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.HostPort.ToString(), "Host port / 房主端口");
+        NMegaLineEdit displayIdInput = CreateLineEdit("DisplayIdInput", BetaDirectConnectConfigService.Current.DisplayId, "Display Name / 显示名称");
+        NMegaLineEdit netIdOverrideInput = CreateLineEdit("NetIdOverrideInput", BetaDirectConnectConfigService.Current.NetIdOverrideText, "Optional Net ID Override / 可选联机身份 ID");
 
         column.AddChild(title);
         column.AddChild(desc);
         column.AddChild(CreateFieldBlock("Host Port / 房主端口", portInput));
+        column.AddChild(CreateFieldBlock("Display Name / 显示名称", displayIdInput));
+        column.AddChild(CreateFieldBlock("Net ID Override / 联机身份 ID 覆盖", netIdOverrideInput));
 
         return panel;
     }
@@ -234,17 +265,56 @@ public static class BetaDirectConnectUi
 
         Label title = CreateLabel("Load Direct Connect / 读档直连开房", 24);
         Label desc = CreateLabel(
-            "When reopening a saved multiplayer run, the host will bind this port before entering the load lobby.",
+            "When reopening a saved multiplayer run, the host will bind this port before entering the load lobby. You can also reclaim a specific saved Net ID here.",
             18);
         desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         desc.Modulate = new Color(0.85f, 0.85f, 0.8f);
         NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.HostPort.ToString(), "Host port / 房主端口");
+        NMegaLineEdit displayIdInput = CreateLineEdit("DisplayIdInput", BetaDirectConnectConfigService.Current.DisplayId, "Display Name / 显示名称");
+        NMegaLineEdit netIdOverrideInput = CreateLineEdit("NetIdOverrideInput", BetaDirectConnectConfigService.Current.NetIdOverrideText, "Optional Net ID Override / 可选联机身份 ID");
 
         column.AddChild(title);
         column.AddChild(desc);
         column.AddChild(CreateFieldBlock("Load Host Port / 读档房主端口", portInput));
+        column.AddChild(CreateFieldBlock("Display Name / 显示名称", displayIdInput));
+        column.AddChild(CreateFieldBlock("Net ID Override / 联机身份 ID 覆盖", netIdOverrideInput));
 
         return panel;
+    }
+
+    private static ulong? GetConfiguredOptionalNetId(LineEdit? input)
+    {
+        if (input == null)
+        {
+            return BetaDirectConnectConfigService.Current.NetIdOverride;
+        }
+
+        string text = BetaDirectConnectConfigService.NormalizeNetIdOverrideText(input.Text);
+        input.Text = text;
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        try
+        {
+            return BetaDirectConnectConfigService.ParseNetIdOverrideInput(text);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    private static string GetNormalizedText(LineEdit? input, string fallback)
+    {
+        string text = BetaDirectConnectConfigService.NormalizeDisplayId(input?.Text ?? fallback);
+        if (input != null)
+        {
+            input.Text = text;
+        }
+
+        return text;
     }
 
     private static Control CreateFieldBlock(string labelText, Control input)
