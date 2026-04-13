@@ -1,6 +1,7 @@
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace BetaDirectConnect;
 
@@ -14,6 +15,7 @@ public partial class MainFile : Node
 
     public static void Initialize()
     {
+        UserDataPathProvider.IsRunningModded = true;
         BetaDirectConnectConfigService.Initialize();
 
         Harmony harmony = new(ModId);

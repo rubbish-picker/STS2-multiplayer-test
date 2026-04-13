@@ -7,6 +7,7 @@ namespace BetaDirectConnect;
 
 public struct DirectConnectIdentityRequestMessage : INetMessage, IPacketSerializable
 {
+    public ulong clientId;
     public bool hasRequestedNetId;
     public ulong requestedNetId;
     public string displayId;
@@ -19,6 +20,7 @@ public struct DirectConnectIdentityRequestMessage : INetMessage, IPacketSerializ
 
     public void Serialize(PacketWriter writer)
     {
+        writer.WriteULong(clientId);
         writer.WriteBool(hasRequestedNetId);
         if (hasRequestedNetId)
         {
@@ -30,6 +32,7 @@ public struct DirectConnectIdentityRequestMessage : INetMessage, IPacketSerializ
 
     public void Deserialize(PacketReader reader)
     {
+        clientId = reader.ReadULong();
         hasRequestedNetId = reader.ReadBool();
         if (hasRequestedNetId)
         {
@@ -46,6 +49,7 @@ public struct DirectConnectIdentityRequestMessage : INetMessage, IPacketSerializ
 
 public struct DirectConnectIdentityAssignedMessage : INetMessage, IPacketSerializable
 {
+    public ulong clientId;
     public ulong assignedNetId;
     public string displayId;
 
@@ -57,12 +61,14 @@ public struct DirectConnectIdentityAssignedMessage : INetMessage, IPacketSeriali
 
     public void Serialize(PacketWriter writer)
     {
+        writer.WriteULong(clientId);
         writer.WriteULong(assignedNetId);
         writer.WriteString(displayId ?? string.Empty);
     }
 
     public void Deserialize(PacketReader reader)
     {
+        clientId = reader.ReadULong();
         assignedNetId = reader.ReadULong();
         displayId = reader.ReadString();
     }
@@ -70,6 +76,7 @@ public struct DirectConnectIdentityAssignedMessage : INetMessage, IPacketSeriali
 
 public struct DirectConnectDisplayIdentityMessage : INetMessage, IPacketSerializable
 {
+    public ulong clientId;
     public ulong netId;
     public string displayId;
 
@@ -81,12 +88,14 @@ public struct DirectConnectDisplayIdentityMessage : INetMessage, IPacketSerializ
 
     public void Serialize(PacketWriter writer)
     {
+        writer.WriteULong(clientId);
         writer.WriteULong(netId);
         writer.WriteString(displayId ?? string.Empty);
     }
 
     public void Deserialize(PacketReader reader)
     {
+        clientId = reader.ReadULong();
         netId = reader.ReadULong();
         displayId = reader.ReadString();
     }

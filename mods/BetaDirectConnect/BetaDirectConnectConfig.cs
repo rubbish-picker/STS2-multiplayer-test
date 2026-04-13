@@ -44,7 +44,7 @@ public static class BetaDirectConnectConfigService
 
     public static BetaDirectConnectRuntimeConfig Current { get; private set; } = new();
 
-    public static ulong EffectiveClientId => PlatformUtil.GetLocalPlayerId(PlatformType.None);
+    public static ulong EffectiveClientId => GetEffectiveClientId();
 
     public static string DefaultDisplayId => EffectiveClientId.ToString();
 
@@ -198,6 +198,19 @@ public static class BetaDirectConnectConfigService
         }
 
         return null;
+    }
+
+    private static ulong GetEffectiveClientId()
+    {
+        if (CommandLineHelper.TryGetValue("clientId", out string? rawValue)
+            && ulong.TryParse(rawValue, out ulong parsedClientId)
+            && parsedClientId > 0UL)
+        {
+            return parsedClientId;
+        }
+
+        ulong platformClientId = PlatformUtil.GetLocalPlayerId(PlatformType.None);
+        return platformClientId > 0UL ? platformClientId : 1UL;
     }
 
     private static string GetModDirectory()

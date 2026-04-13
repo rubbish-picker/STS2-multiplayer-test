@@ -9,6 +9,7 @@ public static class BetaDirectConnectUi
     public const string JoinPanelName = "BetaDirectConnectJoinPanel";
     public const string HostPanelName = "BetaDirectConnectHostPanel";
     public const string LoadPanelName = "BetaDirectConnectLoadPanel";
+    public const string LoadIdentitySummaryName = "SavedIdentitySummary";
 
     public static void EnsureJoinPanel(NJoinFriendScreen screen)
     {
@@ -25,26 +26,32 @@ public static class BetaDirectConnectUi
 
     public static void EnsureHostPanel(NMultiplayerHostSubmenu screen)
     {
-        if (screen.GetNodeOrNull<Control>(HostPanelName) != null)
+        if (screen.GetNodeOrNull<Control>(HostPanelName) is Control existing)
         {
+            SyncHostPanel(existing);
             return;
         }
 
         Control root = BuildHostPanel();
         screen.AddChild(root);
         root.Owner = screen;
+        SyncHostPanel(root);
     }
 
     public static void EnsureLoadPanel(NMultiplayerSubmenu screen)
     {
-        if (screen.GetNodeOrNull<Control>(LoadPanelName) != null)
+        if (screen.GetNodeOrNull<Control>(LoadPanelName) is Control existing)
         {
+            EnsureLoadSummaryBlock(existing);
+            SyncLoadPanel(existing);
             return;
         }
 
         Control root = BuildLoadPanel();
+        EnsureLoadSummaryBlock(root);
         screen.AddChild(root);
         root.Owner = screen;
+        SyncLoadPanel(root);
     }
 
     public static void ShowJoinPanelOnly(NJoinFriendScreen screen)
@@ -205,9 +212,9 @@ public static class BetaDirectConnectUi
         PanelContainer panel = new()
         {
             Name = HostPanelName,
-            CustomMinimumSize = new Vector2(760, 170),
-            Position = new Vector2(580, 820),
-            Size = new Vector2(760, 170),
+            CustomMinimumSize = new Vector2(720, 320),
+            Position = new Vector2(1180, 300),
+            Size = new Vector2(720, 320),
         };
 
         VBoxContainer column = new()
@@ -231,6 +238,7 @@ public static class BetaDirectConnectUi
         NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.HostPort.ToString(), "Host port / 房主端口");
         NMegaLineEdit displayIdInput = CreateLineEdit("DisplayIdInput", BetaDirectConnectConfigService.Current.DisplayId, "Display Name / 显示名称");
         NMegaLineEdit netIdOverrideInput = CreateLineEdit("NetIdOverrideInput", BetaDirectConnectConfigService.Current.NetIdOverrideText, "Optional Net ID Override / 可选联机身份 ID");
+        AttachIdentityPersistence(portInput, displayIdInput, netIdOverrideInput);
 
         column.AddChild(title);
         column.AddChild(desc);
@@ -246,9 +254,9 @@ public static class BetaDirectConnectUi
         PanelContainer panel = new()
         {
             Name = LoadPanelName,
-            CustomMinimumSize = new Vector2(760, 150),
-            Position = new Vector2(580, 820),
-            Size = new Vector2(760, 150),
+            CustomMinimumSize = new Vector2(720, 320),
+            Position = new Vector2(1180, 300),
+            Size = new Vector2(720, 320),
         };
 
         VBoxContainer column = new()
@@ -272,6 +280,7 @@ public static class BetaDirectConnectUi
         NMegaLineEdit portInput = CreateLineEdit("PortInput", BetaDirectConnectConfigService.Current.HostPort.ToString(), "Host port / 房主端口");
         NMegaLineEdit displayIdInput = CreateLineEdit("DisplayIdInput", BetaDirectConnectConfigService.Current.DisplayId, "Display Name / 显示名称");
         NMegaLineEdit netIdOverrideInput = CreateLineEdit("NetIdOverrideInput", BetaDirectConnectConfigService.Current.NetIdOverrideText, "Optional Net ID Override / 可选联机身份 ID");
+        AttachIdentityPersistence(portInput, displayIdInput, netIdOverrideInput);
 
         column.AddChild(title);
         column.AddChild(desc);
@@ -280,6 +289,24 @@ public static class BetaDirectConnectUi
         column.AddChild(CreateFieldBlock("Net ID Override / 联机身份 ID 覆盖", netIdOverrideInput));
 
         return panel;
+    }
+
+    public static void SetLoadPanelVisible(NMultiplayerSubmenu screen, bool visible)
+    {
+        EnsureLoadPanel(screen);
+        if (screen.GetNodeOrNull<Control>(LoadPanelName) is Control panel)
+        {
+            panel.Visible = visible;
+        }
+    }
+
+    public static void SetLoadIdentitySummary(NMultiplayerSubmenu screen, string summaryText)
+    {
+        EnsureLoadPanel(screen);
+        if (screen.GetNodeOrNull<Label>($"{LoadPanelName}/Column/{LoadIdentitySummaryName}/Content") is Label label)
+        {
+            label.Text = summaryText;
+        }
     }
 
     private static ulong? GetConfiguredOptionalNetId(LineEdit? input)
@@ -317,12 +344,102 @@ public static class BetaDirectConnectUi
         return text;
     }
 
+    private static void AttachIdentityPersistence(LineEdit portInput, LineEdit displayIdInput, LineEdit netIdOverrideInput)
+    {
+        portInput.TextChanged += _ => PersistIdentityInputs(portInput, displayIdInput, netIdOverrideInput);
+        displayIdInput.TextChanged += _ => PersistIdentityInputs(portInput, displayIdInput, netIdOverrideInput);
+        netIdOverrideInput.TextChanged += _ => PersistIdentityInputs(portInput, displayIdInput, netIdOverrideInput);
+    }
+
+    private static void PersistIdentityInputs(LineEdit portInput, LineEdit displayIdInput, LineEdit netIdOverrideInput)
+    {
+        int port = BetaDirectConnectConfigService.Current.HostPort;
+        if (int.TryParse(portInput.Text.Trim(), out int parsedPort))
+        {
+            port = BetaDirectConnectConfigService.NormalizePort(parsedPort);
+        }
+
+        string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(displayIdInput.Text);
+        string netIdOverrideText = BetaDirectConnectConfigService.NormalizeNetIdOverrideText(netIdOverrideInput.Text);
+        ulong? netIdOverride = null;
+        try
+        {
+            netIdOverride = BetaDirectConnectConfigService.ParseNetIdOverrideInput(netIdOverrideText);
+        }
+        catch (FormatException)
+        {
+        }
+
+        BetaDirectConnectConfigService.UpdateHostPort(port);
+        BetaDirectConnectConfigService.UpdateIdentitySettings(displayId, netIdOverrideText, netIdOverride);
+    }
+
+    private static void SyncHostPanel(Control panel)
+    {
+        SyncIdentityPanel(panel);
+    }
+
+    private static void SyncLoadPanel(Control panel)
+    {
+        SyncIdentityPanel(panel);
+    }
+
+    private static void EnsureLoadSummaryBlock(Control panel)
+    {
+        if (panel.GetNodeOrNull<Control>($"Column/{LoadIdentitySummaryName}") != null)
+        {
+            return;
+        }
+
+        if (panel.GetNodeOrNull<VBoxContainer>("Column") is not VBoxContainer column)
+        {
+            return;
+        }
+
+        column.AddChild(CreateSummaryBlock());
+    }
+
+    private static void SyncIdentityPanel(Control panel)
+    {
+        if (panel.GetNodeOrNull<LineEdit>("Column/PortInput") is LineEdit portInput)
+        {
+            portInput.Text = BetaDirectConnectConfigService.Current.HostPort.ToString();
+        }
+
+        if (panel.GetNodeOrNull<LineEdit>("Column/DisplayIdInput") is LineEdit displayIdInput)
+        {
+            displayIdInput.Text = BetaDirectConnectConfigService.Current.DisplayId;
+        }
+
+        if (panel.GetNodeOrNull<LineEdit>("Column/NetIdOverrideInput") is LineEdit netIdOverrideInput)
+        {
+            netIdOverrideInput.Text = BetaDirectConnectConfigService.Current.NetIdOverrideText;
+        }
+    }
+
     private static Control CreateFieldBlock(string labelText, Control input)
     {
         VBoxContainer box = new();
         box.AddThemeConstantOverride("separation", 4);
         box.AddChild(CreateLabel(labelText, 18));
         box.AddChild(input);
+        return box;
+    }
+
+    private static Control CreateSummaryBlock()
+    {
+        VBoxContainer box = new()
+        {
+            Name = LoadIdentitySummaryName,
+        };
+        box.AddThemeConstantOverride("separation", 4);
+        box.AddChild(CreateLabel("Saved Identities / 已保存身份", 18));
+
+        Label summary = CreateLabel(string.Empty, 16);
+        summary.Name = "Content";
+        summary.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        summary.Modulate = new Color(0.85f, 0.85f, 0.8f);
+        box.AddChild(summary);
         return box;
     }
 

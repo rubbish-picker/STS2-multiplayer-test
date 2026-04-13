@@ -20,6 +20,13 @@ namespace BetaDirectConnect;
 
 public static class DirectConnectIdentityService
 {
+    public sealed class IdentitySnapshot
+    {
+        public required ulong ClientId { get; init; }
+        public required ulong NetId { get; init; }
+        public required string DisplayId { get; init; }
+    }
+
     private enum HostSessionMode
     {
         NewLobby,
@@ -47,6 +54,7 @@ public static class DirectConnectIdentityService
     private static readonly Dictionary<INetGameService, HostSessionContext> HostSessions = [];
     private static readonly Dictionary<INetGameService, ClientIdentityState> ClientStates = [];
     private static readonly Dictionary<ulong, string> DisplayNames = [];
+    private static readonly Dictionary<ulong, ulong> ClientIds = [];
 
     private static readonly FieldInfo ENetHostConnectionsField =
         AccessTools.Field(typeof(ENetHost), "_connectedPeers")
@@ -190,6 +198,32 @@ public static class DirectConnectIdentityService
         }
     }
 
+    public static bool TryGetClientId(ulong netId, out ulong clientId)
+    {
+        lock (Sync)
+        {
+            return ClientIds.TryGetValue(netId, out clientId);
+        }
+    }
+
+    public static IReadOnlyList<IdentitySnapshot> GetIdentitySnapshots(IEnumerable<ulong> netIds)
+    {
+        lock (Sync)
+        {
+            return netIds
+                .Distinct()
+                .Where(netId => netId > 0UL)
+                .Select(netId => new IdentitySnapshot
+                {
+                    ClientId = ClientIds.TryGetValue(netId, out ulong clientId) ? clientId : 0UL,
+                    NetId = netId,
+                    DisplayId = DisplayNames.TryGetValue(netId, out string? displayId) ? displayId : netId.ToString(),
+                })
+                .OrderBy(snapshot => snapshot.NetId)
+                .ToArray();
+        }
+    }
+
     public static void RegisterClient(NetClientGameService service)
     {
         lock (Sync)
@@ -223,6 +257,7 @@ public static class DirectConnectIdentityService
             HostSessions.Clear();
             ClientStates.Clear();
             DisplayNames.Clear();
+            ClientIds.Clear();
         }
     }
 
@@ -306,6 +341,7 @@ public static class DirectConnectIdentityService
             }
 
             DisplayNames[localNetId] = displayId;
+            ClientIds[localNetId] = BetaDirectConnectConfigService.EffectiveClientId;
         }
     }
 
@@ -315,6 +351,7 @@ public static class DirectConnectIdentityService
         string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
         DirectConnectIdentityRequestMessage message = new()
         {
+            clientId = BetaDirectConnectConfigService.EffectiveClientId,
             hasRequestedNetId = requestedNetId.HasValue,
             requestedNetId = requestedNetId ?? 0UL,
             displayId = displayId,
@@ -333,24 +370,27 @@ public static class DirectConnectIdentityService
 
         ulong assignedNetId = AssignLogicalNetId(session!, transportPeerId, message);
         string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(message.displayId);
+        ulong clientId = message.clientId > 0UL ? message.clientId : 1UL;
 
         UpdateHostTransportPeerId(session!.Service, transportPeerId, assignedNetId);
         UpdateConnectedPlayerId(session, transportPeerId, assignedNetId);
 
         lock (Sync)
         {
+            ClientIds[assignedNetId] = clientId;
             DisplayNames[assignedNetId] = displayId;
         }
 
-        MainFile.Logger.Info($"Assigned logical netId {assignedNetId} to transport peer {transportPeerId} with displayId={displayId}");
+        MainFile.Logger.Info($"Assigned logical netId {assignedNetId} to transport peer {transportPeerId} with clientId={clientId} displayId={displayId}");
 
         session.Service.SendMessage(new DirectConnectIdentityAssignedMessage
         {
+            clientId = clientId,
             assignedNetId = assignedNetId,
             displayId = displayId,
         }, assignedNetId);
 
-        BroadcastDisplayIdentity(session.Service, assignedNetId, displayId, exceptPeerId: assignedNetId);
+        BroadcastDisplayIdentity(session.Service, clientId, assignedNetId, displayId, exceptPeerId: assignedNetId);
         SendKnownDisplayNamesToPeer(session.Service, assignedNetId);
     }
 
@@ -503,7 +543,7 @@ public static class DirectConnectIdentityService
         return (List<NetClientData>)NetHostGameServiceConnectedPeersField.GetValue(service)!;
     }
 
-    private static void BroadcastDisplayIdentity(NetHostGameService service, ulong netId, string displayId, ulong exceptPeerId)
+    private static void BroadcastDisplayIdentity(NetHostGameService service, ulong clientId, ulong netId, string displayId, ulong exceptPeerId)
     {
         foreach (NetClientData peer in GetConnectedPeers(service))
         {
@@ -514,6 +554,7 @@ public static class DirectConnectIdentityService
 
             service.SendMessage(new DirectConnectDisplayIdentityMessage
             {
+                clientId = clientId,
                 netId = netId,
                 displayId = displayId,
             }, peer.peerId);
@@ -532,6 +573,7 @@ public static class DirectConnectIdentityService
         {
             service.SendMessage(new DirectConnectDisplayIdentityMessage
             {
+                clientId = ClientIds.TryGetValue(pair.Key, out ulong clientId) ? clientId : 0UL,
                 netId = pair.Key,
                 displayId = pair.Value,
             }, peerId);
@@ -548,6 +590,7 @@ public static class DirectConnectIdentityService
 
         lock (Sync)
         {
+            ClientIds[message.assignedNetId] = message.clientId;
             DisplayNames[message.assignedNetId] = message.displayId;
             BetaDirectConnectConfigService.UpdateLastAssignedNetId(message.assignedNetId);
 
@@ -562,6 +605,7 @@ public static class DirectConnectIdentityService
     {
         lock (Sync)
         {
+            ClientIds[message.netId] = message.clientId;
             DisplayNames[message.netId] = message.displayId;
         }
     }

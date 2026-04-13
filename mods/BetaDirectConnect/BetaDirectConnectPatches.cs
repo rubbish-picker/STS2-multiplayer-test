@@ -39,6 +39,18 @@ namespace BetaDirectConnect;
 
 public static class BetaDirectConnectPatches
 {
+    private sealed class SavedIdentityEntry
+    {
+        public ulong ClientId { get; set; }
+        public ulong NetId { get; set; }
+        public string DisplayId { get; set; } = string.Empty;
+    }
+
+    private sealed class SavedIdentityManifest
+    {
+        public List<SavedIdentityEntry> Players { get; set; } = [];
+    }
+
     private static readonly string BeginRunTracePath = Path.Combine(GetModDirectory(), "BetaDirectConnect.beginrun.trace.log");
     private static bool UseMissingPlayerReadinessForCurrentRun;
     private static bool LoadedRunStartExplicitlyRequested;
@@ -302,7 +314,7 @@ public static class BetaDirectConnectPatches
             BetaDirectConnectConfigService.UpdateHostPort(port);
             MainFile.Logger.Info($"Attempting direct-connect multiplayer load with localAccountId={localPlayerId}, localNetId={localNetId}, port={port}");
 
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadLocalMultiplayerRunSave(localPlayerId, localNetId);
             if (!readSaveResult.Success || readSaveResult.SaveData == null)
             {
                 MainFile.Logger.Error($"Direct-connect load failed. status={readSaveResult.Status}, localAccountId={localPlayerId}, localNetId={localNetId}");
@@ -351,7 +363,7 @@ public static class BetaDirectConnectPatches
             NMultiplayerSubmenu submenu = __instance.OpenMultiplayerSubmenu();
             ulong localPlayerId = GetLocalAccountId();
             ulong localNetId = GetPreferredLocalNetIdForLoad();
-            ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
+            ReadSaveResult<SerializableRun> readSaveResult = LoadLocalMultiplayerRunSave(localPlayerId, localNetId);
             if (readSaveResult.SaveData != null)
             {
                 submenu.StartHost(readSaveResult.SaveData);
@@ -374,6 +386,10 @@ public static class BetaDirectConnectPatches
             {
                 __result = displayId;
             }
+            else if (playerId == DirectConnectIdentityService.GetEffectiveHostNetId())
+            {
+                __result = BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
+            }
             else if (playerId == 1UL && string.Equals(__result, "Test Host", StringComparison.Ordinal))
             {
                 __result = playerId.ToString();
@@ -392,6 +408,73 @@ public static class BetaDirectConnectPatches
         {
             __result = DirectConnectIdentityService.GetEffectiveHostNetId();
             return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SaveManager), "ConstructDefault")]
+    private static class SaveManagerConstructDefaultPatch
+    {
+        private static bool Prefix(ref SaveManager __result)
+        {
+            PlatformType platformType = PlatformUtil.PrimaryPlatform;
+            if (platformType != PlatformType.None)
+            {
+                return true;
+            }
+
+            ulong localAccountId = BetaDirectConnectConfigService.EffectiveClientId;
+            string saveRoot = UserDataPathProvider.GetAccountScopedBasePath(null, platformType, localAccountId);
+            ISaveStore saveStore = new GodotFileIo(saveRoot);
+            MainFile.Logger.Info($"Forced SaveManager root path to {saveRoot} for platform={platformType} clientId={localAccountId}");
+            __result = new SaveManager(saveStore);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetAccountScopedBasePath))]
+    private static class UserDataPathProviderGetAccountScopedBasePathPatch
+    {
+        private static void Postfix(string? dataType, PlatformType? platformOverride, ulong? userIdOverride, ref string __result)
+        {
+            if (!ShouldForceClientScopedPath(platformOverride, userIdOverride, out ulong clientId))
+            {
+                return;
+            }
+
+            string platformDirectoryName = UserDataPathProvider.GetPlatformDirectoryName(PlatformType.None);
+            __result = dataType == null
+                ? $"user://{platformDirectoryName}/{clientId}"
+                : $"user://{platformDirectoryName}/{clientId}/{dataType}";
+        }
+    }
+
+    [HarmonyPatch(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileScopedBasePath))]
+    private static class UserDataPathProviderGetProfileScopedBasePathPatch
+    {
+        private static void Postfix(int profileId, PlatformType? platformOverride, ulong? userIdOverride, ref string __result)
+        {
+            if (!ShouldForceClientScopedPath(platformOverride, userIdOverride, out ulong clientId))
+            {
+                return;
+            }
+
+            string platformDirectoryName = UserDataPathProvider.GetPlatformDirectoryName(PlatformType.None);
+            __result = $"user://{platformDirectoryName}/{clientId}/{UserDataPathProvider.GetProfileDir(profileId)}";
+        }
+    }
+
+    [HarmonyPatch(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileScopedPath))]
+    private static class UserDataPathProviderGetProfileScopedPathPatch
+    {
+        private static void Postfix(int profileId, string dataType, PlatformType? platformOverride, ulong? userIdOverride, ref string __result)
+        {
+            if (!ShouldForceClientScopedPath(platformOverride, userIdOverride, out ulong clientId))
+            {
+                return;
+            }
+
+            string platformDirectoryName = UserDataPathProvider.GetPlatformDirectoryName(PlatformType.None);
+            __result = $"user://{platformDirectoryName}/{clientId}/{UserDataPathProvider.GetProfileDir(profileId)}/{dataType}";
         }
     }
 
@@ -600,6 +683,16 @@ public static class BetaDirectConnectPatches
 
             __result = SaveClientMirrorAsync(preFinishedRoom);
             return false;
+        }
+
+        private static void Postfix(ref Task __result)
+        {
+            if (!ShouldSaveIdentityManifest())
+            {
+                return;
+            }
+
+            __result = SaveIdentityManifestAfterAsync(__result);
         }
     }
 
@@ -1243,11 +1336,30 @@ public static class BetaDirectConnectPatches
             && netService.Type == NetGameType.Client;
     }
 
+    private static bool ShouldSaveIdentityManifest()
+    {
+        if (!RunManager.Instance.ShouldSave)
+        {
+            return false;
+        }
+
+        INetGameService? netService = RunManager.Instance.NetService;
+        return netService != null
+            && netService.Platform == PlatformType.None
+            && netService.Type.IsMultiplayer();
+    }
+
+    private static async Task SaveIdentityManifestAfterAsync(Task saveTask)
+    {
+        await saveTask;
+        await SaveIdentityManifestAsync();
+    }
+
     private static async Task SaveClientMirrorAsync(AbstractRoom? preFinishedRoom)
     {
         SerializableRun save = RunManager.Instance.ToSave(preFinishedRoom);
         ulong localPlayerId = GetLocalAccountId();
-        string path = GetDirectConnectMultiplayerSavePath(localPlayerId);
+        string path = GetMultiplayerRunSavePath(localPlayerId);
         string backupPath = path + ".backup";
 
         string? directory = Path.GetDirectoryName(path);
@@ -1264,7 +1376,7 @@ public static class BetaDirectConnectPatches
 
         await using FileStream stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
-        MainFile.Logger.Info($"Mirrored direct-connect client multiplayer save to {path}");
+        MainFile.Logger.Info($"Saved direct-connect multiplayer run to {path} for clientId={localPlayerId}");
     }
 
     private static void RefreshDirectConnectLoadButtons(NMultiplayerSubmenu submenu)
@@ -1274,15 +1386,20 @@ public static class BetaDirectConnectPatches
             return;
         }
 
-        bool hasSave = HasAnyDirectConnectMultiplayerRunSave(GetLocalAccountId(), GetPreferredLocalNetIdForLoad());
+        bool hasSave = HasLocalMultiplayerRunSave(GetLocalAccountId());
         MultiplayerHostButtonRef(submenu).Visible = !hasSave;
         MultiplayerLoadButtonRef(submenu).Visible = hasSave;
         MultiplayerAbandonButtonRef(submenu).Visible = hasSave;
+        BetaDirectConnectUi.SetLoadPanelVisible(submenu, hasSave);
+        BetaDirectConnectUi.SetLoadIdentitySummary(submenu, hasSave
+            ? BuildSavedIdentitySummaryText(GetLocalAccountId(), GetPreferredLocalNetIdForLoad())
+            : string.Empty);
     }
 
-    private static bool HasAnyDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId)
+    private static bool HasLocalMultiplayerRunSave(ulong localAccountId)
     {
-        return HasDirectConnectMultiplayerRunSave(localAccountId) || HasOfficialMultiplayerRunSave(localNetId);
+        string path = GetMultiplayerRunSavePath(localAccountId);
+        return File.Exists(path) || File.Exists(path + ".backup");
     }
 
     private static ulong GetLocalAccountId()
@@ -1306,26 +1423,14 @@ public static class BetaDirectConnectPatches
         return DirectConnectIdentityService.GetEffectiveHostNetId();
     }
 
-    private static bool HasDirectConnectMultiplayerRunSave(ulong playerId)
+    private static ReadSaveResult<SerializableRun> LoadLocalMultiplayerRunSave(ulong localAccountId, ulong localNetId)
     {
-        string path = GetDirectConnectMultiplayerSavePath(playerId);
-        return File.Exists(path) || File.Exists(path + ".backup");
-    }
-
-    private static bool HasOfficialMultiplayerRunSave(ulong playerId)
-    {
-        string path = GetOfficialMultiplayerRunSavePath(playerId);
-        return File.Exists(path) || File.Exists(path + ".backup");
-    }
-
-    private static ReadSaveResult<SerializableRun> LoadDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId)
-    {
-        string path = GetDirectConnectMultiplayerSavePath(localAccountId);
+        string path = GetMultiplayerRunSavePath(localAccountId);
         string backupPath = path + ".backup";
         string? pathToRead = File.Exists(path) ? path : (File.Exists(backupPath) ? backupPath : null);
         if (pathToRead == null)
         {
-            return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileNotFound, "Direct-connect multiplayer save file not found.");
+            return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileNotFound, "Local multiplayer save file not found.");
         }
 
         try
@@ -1333,13 +1438,13 @@ public static class BetaDirectConnectPatches
             string json = File.ReadAllText(pathToRead);
             if (string.IsNullOrWhiteSpace(json))
             {
-                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileEmpty, "Direct-connect multiplayer save file was empty.");
+                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.FileEmpty, "Local multiplayer save file was empty.");
             }
 
             SerializableRun? save = JsonSerializer.Deserialize(json, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
             if (save == null)
             {
-                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, "Direct-connect multiplayer save deserialized to null.");
+                return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, "Local multiplayer save deserialized to null.");
             }
 
             SerializableRun canonicalized = RunManager.CanonicalizeSave(save, localNetId);
@@ -1347,41 +1452,19 @@ public static class BetaDirectConnectPatches
         }
         catch (JsonException ex)
         {
-            MainFile.Logger.Error($"Failed to parse direct-connect multiplayer save at {pathToRead}: {ex}");
+            MainFile.Logger.Error($"Failed to parse local multiplayer save at {pathToRead}: {ex}");
             return new ReadSaveResult<SerializableRun>(ReadSaveStatus.JsonParseError, ex.Message);
         }
         catch (Exception ex)
         {
-            MainFile.Logger.Error($"Direct-connect multiplayer save validation failed at {pathToRead}: {ex}");
+            MainFile.Logger.Error($"Local multiplayer save validation failed at {pathToRead}: {ex}");
             return new ReadSaveResult<SerializableRun>(ReadSaveStatus.ValidationFailed, ex.Message);
         }
     }
 
-    private static ReadSaveResult<SerializableRun> LoadPreferredDirectConnectMultiplayerRunSave(ulong localAccountId, ulong localNetId, bool preferOfficial = false)
+    private static void DeleteLocalMultiplayerRunSave(ulong localAccountId)
     {
-        if (preferOfficial)
-        {
-            ReadSaveResult<SerializableRun> officialSave = SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localNetId);
-            if (officialSave.Success || officialSave.Status != ReadSaveStatus.FileNotFound)
-            {
-                return officialSave;
-            }
-
-            return LoadDirectConnectMultiplayerRunSave(localAccountId, localNetId);
-        }
-
-        ReadSaveResult<SerializableRun> directSave = LoadDirectConnectMultiplayerRunSave(localAccountId, localNetId);
-        if (directSave.Success || directSave.Status != ReadSaveStatus.FileNotFound)
-        {
-            return directSave;
-        }
-
-        return SaveManager.Instance.LoadAndCanonicalizeMultiplayerRunSave(localNetId);
-    }
-
-    private static void DeleteDirectConnectMultiplayerRunSave(ulong playerId)
-    {
-        string path = GetDirectConnectMultiplayerSavePath(playerId);
+        string path = GetMultiplayerRunSavePath(localAccountId);
         try
         {
             if (File.Exists(path))
@@ -1394,32 +1477,16 @@ public static class BetaDirectConnectPatches
             {
                 File.Delete(backupPath);
             }
-        }
-        catch (Exception ex)
-        {
-            MainFile.Logger.Error($"Failed to delete direct-connect multiplayer save for player {playerId}: {ex}");
-        }
-    }
 
-    private static void DeleteOfficialMultiplayerRunSave(ulong playerId)
-    {
-        string path = GetOfficialMultiplayerRunSavePath(playerId);
-        try
-        {
-            if (File.Exists(path))
+            string manifestPath = GetMultiplayerIdentityManifestPath(localAccountId);
+            if (File.Exists(manifestPath))
             {
-                File.Delete(path);
-            }
-
-            string backupPath = path + ".backup";
-            if (File.Exists(backupPath))
-            {
-                File.Delete(backupPath);
+                File.Delete(manifestPath);
             }
         }
         catch (Exception ex)
         {
-            MainFile.Logger.Error($"Failed to delete official multiplayer save for player {playerId}: {ex}");
+            MainFile.Logger.Error($"Failed to delete local multiplayer save for account {localAccountId}: {ex}");
         }
     }
 
@@ -1448,7 +1515,7 @@ public static class BetaDirectConnectPatches
 
         ulong localPlayerId = GetLocalAccountId();
         ulong localNetId = GetPreferredLocalNetIdForLoad();
-        ReadSaveResult<SerializableRun> readSaveResult = LoadPreferredDirectConnectMultiplayerRunSave(localPlayerId, localNetId, preferOfficial: true);
+        ReadSaveResult<SerializableRun> readSaveResult = LoadLocalMultiplayerRunSave(localPlayerId, localNetId);
         if (readSaveResult.Success && readSaveResult.SaveData != null)
         {
             try
@@ -1472,30 +1539,153 @@ public static class BetaDirectConnectPatches
             MainFile.Logger.Error($"ERROR: Failed to load direct-connect multiplayer run save: status={readSaveResult.Status}. Deleting current run...");
         }
 
-        DeleteDirectConnectMultiplayerRunSave(localPlayerId);
-        DeleteOfficialMultiplayerRunSave(localNetId);
+        DeleteLocalMultiplayerRunSave(localPlayerId);
         RefreshDirectConnectLoadButtons(submenu);
     }
 
-    private static string GetDirectConnectMultiplayerSavePath(ulong playerId)
-    {
-        string fileName = $"current_run_mp.direct.{playerId}.save";
-        string godotPath = UserDataPathProvider.GetProfileScopedPath(
-            SaveManager.Instance.CurrentProfileId,
-            Path.Combine(UserDataPathProvider.SavesDir, fileName),
-            PlatformType.None,
-            playerId);
-        return ToFileSystemPath(godotPath);
-    }
-
-    private static string GetOfficialMultiplayerRunSavePath(ulong playerId)
+    private static string GetMultiplayerRunSavePath(ulong localAccountId)
     {
         string godotPath = UserDataPathProvider.GetProfileScopedPath(
             SaveManager.Instance.CurrentProfileId,
             Path.Combine(UserDataPathProvider.SavesDir, RunSaveManager.multiplayerRunSaveFileName),
             PlatformType.None,
-            playerId);
+            localAccountId);
         return ToFileSystemPath(godotPath);
+    }
+
+    private static string GetMultiplayerIdentityManifestPath(ulong localAccountId)
+    {
+        string godotPath = UserDataPathProvider.GetProfileScopedPath(
+            SaveManager.Instance.CurrentProfileId,
+            Path.Combine(UserDataPathProvider.SavesDir, "current_run_mp.identities.json"),
+            PlatformType.None,
+            localAccountId);
+        return ToFileSystemPath(godotPath);
+    }
+
+    private static async Task SaveIdentityManifestAsync(SerializableRun? save = null)
+    {
+        save ??= RunManager.Instance.ToSave(null);
+        ulong localAccountId = GetLocalAccountId();
+        string path = GetMultiplayerIdentityManifestPath(localAccountId);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        SavedIdentityManifest manifest = new()
+        {
+            Players = save.Players
+                .Select(player => new SavedIdentityEntry
+                {
+                    ClientId = ResolveSavedClientId(player.NetId),
+                    NetId = player.NetId,
+                    DisplayId = ResolveSavedDisplayId(player.NetId),
+                })
+                .OrderBy(entry => entry.NetId)
+                .ToList()
+        };
+
+        await using FileStream stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, manifest);
+    }
+
+    private static ulong ResolveSavedClientId(ulong netId)
+    {
+        if (DirectConnectIdentityService.TryGetClientId(netId, out ulong clientId) && clientId > 0UL)
+        {
+            return clientId;
+        }
+
+        ulong localAccountId = GetLocalAccountId();
+        ulong localNetId = GetPreferredLocalNetIdForLoad();
+        return netId == localNetId ? localAccountId : 0UL;
+    }
+
+    private static string ResolveSavedDisplayId(ulong netId)
+    {
+        if (DirectConnectIdentityService.TryGetDisplayName(netId, out string displayId))
+        {
+            return displayId;
+        }
+
+        ulong localNetId = GetPreferredLocalNetIdForLoad();
+        if (netId == localNetId)
+        {
+            return BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
+        }
+
+        return netId.ToString();
+    }
+
+    private static SavedIdentityManifest? LoadSavedIdentityManifest(ulong localAccountId)
+    {
+        string path = GetMultiplayerIdentityManifestPath(localAccountId);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            string json = File.ReadAllText(path);
+            SavedIdentityManifest? manifest = JsonSerializer.Deserialize<SavedIdentityManifest>(json);
+            if (manifest == null)
+            {
+                return null;
+            }
+
+            manifest.Players = manifest.Players
+                .Where(entry => entry.NetId > 0UL)
+                .OrderBy(entry => entry.NetId)
+                .ToList();
+            return manifest;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"Failed to load multiplayer identity manifest for account {localAccountId}: {ex}");
+            return null;
+        }
+    }
+
+    private static string BuildSavedIdentitySummaryText(ulong localAccountId, ulong localNetId)
+    {
+        SavedIdentityManifest? manifest = LoadSavedIdentityManifest(localAccountId);
+        if (manifest == null || manifest.Players.Count == 0)
+        {
+            return $"You: clientId={localAccountId}, netId={localNetId}, displayId={BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId)}";
+        }
+
+        int clientIdMatchCount = manifest.Players.Count(entry => entry.ClientId == localAccountId && entry.ClientId > 0UL);
+        bool hasNetIdMatch = manifest.Players.Any(entry => entry.NetId == localNetId);
+        IEnumerable<string> lines = manifest.Players.Select(entry =>
+        {
+            bool isSelf = entry.NetId == localNetId
+                || (!hasNetIdMatch && clientIdMatchCount == 1 && entry.ClientId == localAccountId && entry.ClientId > 0UL);
+            string clientText = entry.ClientId > 0UL ? entry.ClientId.ToString() : "?";
+            string displayText = string.IsNullOrWhiteSpace(entry.DisplayId) ? "?" : entry.DisplayId;
+            return $"{(isSelf ? "[You] " : string.Empty)}clientId={clientText}  netId={entry.NetId}  displayId={displayText}";
+        });
+        return string.Join('\n', lines);
+    }
+
+    private static bool ShouldForceClientScopedPath(PlatformType? platformOverride, ulong? userIdOverride, out ulong clientId)
+    {
+        clientId = 0UL;
+        if (userIdOverride.HasValue)
+        {
+            return false;
+        }
+
+        PlatformType resolvedPlatform = platformOverride ?? PlatformUtil.PrimaryPlatform;
+        if (resolvedPlatform != PlatformType.None)
+        {
+            return false;
+        }
+
+        clientId = BetaDirectConnectConfigService.EffectiveClientId;
+        return clientId > 0UL;
     }
 
     private static void RebuildSavedRunLobbyForConnectedPlayers(RunState state, LoadRunLobby loadLobby)
