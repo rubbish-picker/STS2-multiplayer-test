@@ -1,10 +1,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading.Tasks;
+using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer;
@@ -15,6 +18,7 @@ using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Multiplayer.Transport.ENet;
 using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace BetaDirectConnect;
 
@@ -34,6 +38,12 @@ public static class DirectConnectIdentityService
         Running,
     }
 
+    private sealed class SavedIdentityManifest
+    {
+        public ulong LocalDefaultNetId { get; set; }
+        public List<ulong> AllNetIds { get; set; } = [];
+    }
+
     private sealed class HostSessionContext
     {
         public required NetHostGameService Service { get; init; }
@@ -41,6 +51,7 @@ public static class DirectConnectIdentityService
         public required string LocalDisplayId { get; set; }
         public required HostSessionMode Mode { get; set; }
         public HashSet<ulong> EligibleNetIds { get; } = [];
+        public Dictionary<ulong, ulong> TransportToLogicalNetIds { get; } = [];
         public StartRunLobby? StartRunLobby { get; set; }
         public LoadRunLobby? LoadRunLobby { get; set; }
     }
@@ -88,6 +99,12 @@ public static class DirectConnectIdentityService
                 return requested.Value;
             }
 
+            if (eligible.Contains(1UL))
+            {
+                BetaDirectConnectConfigService.UpdateLastAssignedNetId(1UL);
+                return 1UL;
+            }
+
             ulong fallback = eligible.FirstOrDefault();
             if (fallback > 0UL)
             {
@@ -96,7 +113,7 @@ public static class DirectConnectIdentityService
             }
         }
 
-        ulong localNetId = requested ?? BetaDirectConnectConfigService.CreateStableAutomaticNetIdSeed();
+        ulong localNetId = requested ?? 1UL;
         BetaDirectConnectConfigService.UpdateLastAssignedNetId(localNetId);
         return localNetId;
     }
@@ -159,12 +176,7 @@ public static class DirectConnectIdentityService
             return overrideNetId.Value;
         }
 
-        if (BetaDirectConnectConfigService.Current.LastAssignedNetId > 0UL)
-        {
-            return BetaDirectConnectConfigService.Current.LastAssignedNetId;
-        }
-
-        return BetaDirectConnectConfigService.CreateStableAutomaticNetIdSeed();
+        return 1UL;
     }
 
     public static string GetDisplayName(ulong netId)
@@ -285,7 +297,7 @@ public static class DirectConnectIdentityService
     public static ulong GenerateTemporaryTransportNetId()
     {
         Span<byte> bytes = stackalloc byte[8];
-        RandomNumberGenerator.Fill(bytes);
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
         ulong value = BitConverter.ToUInt64(bytes);
         value &= 0x7FFFFFFFFFFFFFFFUL;
         if (value <= 1UL)
@@ -347,7 +359,7 @@ public static class DirectConnectIdentityService
 
     private static void SendIdentityRequest(NetClientGameService service)
     {
-        ulong? requestedNetId = BetaDirectConnectConfigService.GetRequestedNetId();
+        ulong? requestedNetId = ResolveRequestedNetIdForClientJoin();
         string displayId = BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
         DirectConnectIdentityRequestMessage message = new()
         {
@@ -379,6 +391,7 @@ public static class DirectConnectIdentityService
         {
             ClientIds[assignedNetId] = clientId;
             DisplayNames[assignedNetId] = displayId;
+            session.TransportToLogicalNetIds[transportPeerId] = assignedNetId;
         }
 
         MainFile.Logger.Info($"Assigned logical netId {assignedNetId} to transport peer {transportPeerId} with clientId={clientId} displayId={displayId}");
@@ -414,16 +427,46 @@ public static class DirectConnectIdentityService
         return false;
     }
 
+    public static bool TryResolveLogicalPeerId(INetGameService service, ulong peerOrLogicalId, out ulong logicalPeerId)
+    {
+        lock (Sync)
+        {
+            if (HostSessions.TryGetValue(service, out HostSessionContext? session))
+            {
+                if (session.TransportToLogicalNetIds.TryGetValue(peerOrLogicalId, out ulong mappedLogicalId))
+                {
+                    logicalPeerId = mappedLogicalId;
+                    return true;
+                }
+
+                if (session.LocalNetId == peerOrLogicalId
+                    || session.TransportToLogicalNetIds.Values.Contains(peerOrLogicalId)
+                    || session.EligibleNetIds.Contains(peerOrLogicalId))
+                {
+                    logicalPeerId = peerOrLogicalId;
+                    return true;
+                }
+            }
+        }
+
+        logicalPeerId = 0UL;
+        return false;
+    }
+
     private static ulong AssignLogicalNetId(HostSessionContext session, ulong transportPeerId, DirectConnectIdentityRequestMessage request)
     {
         HashSet<ulong> usedIds = GetUsedLogicalIds(session.Service);
         usedIds.Add(session.LocalNetId);
 
         ulong? requestedNetId = request.hasRequestedNetId ? request.requestedNetId : null;
+        MainFile.Logger.Info(
+            $"AssignLogicalNetId mode={session.Mode} transportPeerId={transportPeerId} requestedNetId={requestedNetId?.ToString() ?? "<auto>"} " +
+            $"hostNetId={session.LocalNetId} used=[{string.Join(", ", usedIds.OrderBy(id => id))}] eligible=[{string.Join(", ", session.EligibleNetIds.OrderBy(id => id))}]");
         if (session.Mode != HostSessionMode.NewLobby)
         {
             if (requestedNetId.HasValue && session.EligibleNetIds.Contains(requestedNetId.Value) && !usedIds.Contains(requestedNetId.Value))
             {
+                MainFile.Logger.Info($"AssignLogicalNetId accepted requested saved netId={requestedNetId.Value} for transportPeerId={transportPeerId}.");
                 return requestedNetId.Value;
             }
 
@@ -433,20 +476,23 @@ public static class DirectConnectIdentityService
                 .FirstOrDefault();
             if (availableEligible > 0UL)
             {
+                MainFile.Logger.Info($"AssignLogicalNetId picked next eligible saved netId={availableEligible} for transportPeerId={transportPeerId}.");
                 return availableEligible;
             }
         }
         else if (requestedNetId.HasValue && !usedIds.Contains(requestedNetId.Value) && requestedNetId.Value > 1UL)
         {
+            MainFile.Logger.Info($"AssignLogicalNetId accepted requested new-lobby netId={requestedNetId.Value} for transportPeerId={transportPeerId}.");
             return requestedNetId.Value;
         }
 
-        ulong next = Math.Max(session.LocalNetId + 1UL, 2UL);
+        ulong next = 1UL;
         while (usedIds.Contains(next))
         {
             next++;
         }
 
+        MainFile.Logger.Info($"AssignLogicalNetId fell back to sequential netId={next} for transportPeerId={transportPeerId}.");
         return next;
     }
 
@@ -590,7 +636,7 @@ public static class DirectConnectIdentityService
 
         lock (Sync)
         {
-            ClientIds[message.assignedNetId] = message.clientId;
+            ClientIds[message.assignedNetId] = BetaDirectConnectConfigService.EffectiveClientId;
             DisplayNames[message.assignedNetId] = message.displayId;
             BetaDirectConnectConfigService.UpdateLastAssignedNetId(message.assignedNetId);
 
@@ -624,5 +670,80 @@ public static class DirectConnectIdentityService
         }
 
         return null;
+    }
+
+    private static ulong? ResolveRequestedNetIdForClientJoin()
+    {
+        if (BetaDirectConnectConfigService.Current.NetIdOverride.HasValue)
+        {
+            MainFile.Logger.Info($"ResolveRequestedNetIdForClientJoin using explicit override netId={BetaDirectConnectConfigService.Current.NetIdOverride.Value}.");
+            return BetaDirectConnectConfigService.Current.NetIdOverride.Value;
+        }
+
+        if (TryGetSavedNetIdForLocalClient(out ulong savedNetId))
+        {
+            MainFile.Logger.Info($"ResolveRequestedNetIdForClientJoin using saved local default netId={savedNetId}.");
+            return savedNetId;
+        }
+
+        MainFile.Logger.Info("ResolveRequestedNetIdForClientJoin found no explicit override or saved local default netId.");
+        return null;
+    }
+
+    private static bool TryGetSavedNetIdForLocalClient(out ulong netId)
+    {
+        netId = 0UL;
+
+        try
+        {
+            string manifestPath = GetMultiplayerIdentityManifestPath(BetaDirectConnectConfigService.EffectiveClientId);
+            if (!File.Exists(manifestPath))
+            {
+                MainFile.Logger.Info($"TryGetSavedNetIdForLocalClient manifest not found at {manifestPath}.");
+                return false;
+            }
+
+            string json = File.ReadAllText(manifestPath);
+            SavedIdentityManifest? manifest = JsonSerializer.Deserialize<SavedIdentityManifest>(json);
+            if (manifest == null)
+            {
+                MainFile.Logger.Warn($"TryGetSavedNetIdForLocalClient manifest deserialized to null at {manifestPath}.");
+                return false;
+            }
+
+            manifest.AllNetIds = manifest.AllNetIds
+                .Where(savedNetId => savedNetId > 0UL)
+                .Distinct()
+                .OrderBy(savedNetId => savedNetId)
+                .ToList();
+            if (manifest.LocalDefaultNetId <= 0UL || !manifest.AllNetIds.Contains(manifest.LocalDefaultNetId))
+            {
+                MainFile.Logger.Warn(
+                    $"TryGetSavedNetIdForLocalClient invalid manifest at {manifestPath}. " +
+                    $"localDefaultNetId={manifest.LocalDefaultNetId} allNetIds=[{string.Join(", ", manifest.AllNetIds)}]");
+                return false;
+            }
+
+            netId = manifest.LocalDefaultNetId;
+            MainFile.Logger.Info(
+                $"TryGetSavedNetIdForLocalClient resolved localDefaultNetId={netId} from {manifestPath}. " +
+                $"allNetIds=[{string.Join(", ", manifest.AllNetIds)}]");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Warn($"Failed to resolve saved direct-connect netId for local client: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static string GetMultiplayerIdentityManifestPath(ulong localAccountId)
+    {
+        string godotPath = UserDataPathProvider.GetProfileScopedPath(
+            SaveManager.Instance.CurrentProfileId,
+            Path.Combine(UserDataPathProvider.SavesDir, "current_run_mp.identities.json"),
+            PlatformType.None,
+            localAccountId);
+        return ProjectSettings.GlobalizePath(godotPath);
     }
 }

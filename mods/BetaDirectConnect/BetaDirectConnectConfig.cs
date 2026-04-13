@@ -192,11 +192,6 @@ public static class BetaDirectConnectConfigService
             return Current.NetIdOverride.Value;
         }
 
-        if (Current.LastAssignedNetId > 0UL)
-        {
-            return Current.LastAssignedNetId;
-        }
-
         return null;
     }
 

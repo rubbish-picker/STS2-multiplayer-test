@@ -15,6 +15,7 @@ using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
+using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Game.PeerInput;
 using MegaCrit.Sts2.Core.Multiplayer.Transport.ENet;
 using MegaCrit.Sts2.Core.Nodes;
@@ -48,6 +49,8 @@ public static class BetaDirectConnectPatches
 
     private sealed class SavedIdentityManifest
     {
+        public ulong LocalDefaultNetId { get; set; }
+        public List<ulong> AllNetIds { get; set; } = [];
         public List<SavedIdentityEntry> Players { get; set; } = [];
     }
 
@@ -179,6 +182,14 @@ public static class BetaDirectConnectPatches
         AccessTools.Field(typeof(LoadRunLobby), "_readyPlayers")
         ?? throw new InvalidOperationException("Could not find LoadRunLobby._readyPlayers.");
 
+    private static readonly FieldInfo LoadRunLobbyLoggerField =
+        AccessTools.Field(typeof(LoadRunLobby), "_logger")
+        ?? throw new InvalidOperationException("Could not find LoadRunLobby._logger.");
+
+    private static readonly FieldInfo LoadRunLobbyIsBeginningRunField =
+        AccessTools.Field(typeof(LoadRunLobby), "_isBeginningRun")
+        ?? throw new InvalidOperationException("Could not find LoadRunLobby._isBeginningRun.");
+
     [HarmonyPatch(typeof(NJoinFriendScreen), nameof(NJoinFriendScreen._Ready))]
     private static class JoinFriendReadyPatch
     {
@@ -279,6 +290,36 @@ public static class BetaDirectConnectPatches
             BetaDirectConnectConfigService.UpdateHostPort(port);
             BetaDirectConnectConfigService.UpdateIdentitySettings(displayId, netIdOverride?.ToString() ?? string.Empty, netIdOverride);
             TaskHelper.RunSafely(StartHostAsyncDirect(gameMode, HostLoadingOverlayRef(__instance), HostStackRef(__instance), port));
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SaveManager), "get_HasMultiplayerRunSave")]
+    private static class SaveManagerHasMultiplayerRunSavePatch
+    {
+        private static bool Prefix(ref bool __result)
+        {
+            if (!ShouldOverrideVanillaMultiplayerSaveChecks())
+            {
+                return true;
+            }
+
+            __result = HasLocalMultiplayerRunSave(GetLocalAccountId());
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SaveManager), nameof(SaveManager.LoadAndCanonicalizeMultiplayerRunSave))]
+    private static class SaveManagerLoadAndCanonicalizeMultiplayerRunSavePatch
+    {
+        private static bool Prefix(ref ReadSaveResult<SerializableRun> __result)
+        {
+            if (!ShouldOverrideVanillaMultiplayerSaveChecks())
+            {
+                return true;
+            }
+
+            __result = LoadLocalMultiplayerRunSave(GetLocalAccountId(), GetPreferredLocalNetIdForLoad());
             return false;
         }
     }
@@ -784,6 +825,17 @@ public static class BetaDirectConnectPatches
     [HarmonyPatch(typeof(LoadRunLobby), "HandleClientLoadJoinRequestMessage")]
     private static class LoadRunLobbyHandleClientLoadJoinRequestMessagePatch
     {
+        private static bool Prefix(LoadRunLobby __instance, ulong senderId)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            HandleClientLoadJoinRequestMessageUsingLogicalNetId(__instance, senderId);
+            return false;
+        }
+
         private static void Postfix(LoadRunLobby __instance, ulong senderId)
         {
             if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
@@ -796,6 +848,51 @@ public static class BetaDirectConnectPatches
                 $"[LoadedRunTrace] HandleClientLoadJoinRequestMessage sender={senderId} connected=[{string.Join(", ", __instance.ConnectedPlayerIds.OrderBy(id => id))}] " +
                 $"ready=[{string.Join(", ", GetLoadedRunReadyPlayers(__instance).OrderBy(id => id))}] connecting={GetConnectingPlayerCount(__instance)} " +
                 $"peers=[{DescribeConnectedPeers(__instance.NetService as INetHostGameService)}]");
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "OnConnectedToClientAsHost")]
+    private static class LoadRunLobbyOnConnectedToClientAsHostPatch
+    {
+        private static bool Prefix(LoadRunLobby __instance, ulong playerId)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            HandleLoadedRunClientConnectedUsingTransportPeer(__instance, playerId);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "HandlePlayerReadyMessage")]
+    private static class LoadRunLobbyHandlePlayerReadyMessagePatch
+    {
+        private static bool Prefix(LoadRunLobby __instance, MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby.LobbyPlayerSetReadyMessage message, ulong senderId)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            HandleLoadedRunPlayerReadyUsingLogicalNetId(__instance, message, senderId);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadRunLobby), "OnDisconnectedFromClientAsHost")]
+    private static class LoadRunLobbyOnDisconnectedFromClientAsHostPatch
+    {
+        private static bool Prefix(LoadRunLobby __instance, ulong playerId, NetErrorInfo info)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return true;
+            }
+
+            HandleLoadedRunClientDisconnectedUsingLogicalNetId(__instance, playerId, info);
+            return false;
         }
     }
 
@@ -1402,6 +1499,22 @@ public static class BetaDirectConnectPatches
         return File.Exists(path) || File.Exists(path + ".backup");
     }
 
+    private static bool ShouldOverrideVanillaMultiplayerSaveChecks()
+    {
+        if (!ShouldUseHostDirectConnect())
+        {
+            return false;
+        }
+
+        SaveManager? saveManager = SaveManager.Instance;
+        if (saveManager == null)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private static ulong GetLocalAccountId()
     {
         return BetaDirectConnectConfigService.EffectiveClientId;
@@ -1415,12 +1528,39 @@ public static class BetaDirectConnectPatches
             return requestedNetId.Value;
         }
 
+        if (TryResolveLocalNetIdFromManifest(GetLocalAccountId(), out ulong manifestNetId))
+        {
+            return manifestNetId;
+        }
+
         if (BetaDirectConnectConfigService.Current.LastAssignedNetId > 0UL)
         {
             return BetaDirectConnectConfigService.Current.LastAssignedNetId;
         }
 
         return DirectConnectIdentityService.GetEffectiveHostNetId();
+    }
+
+    private static bool TryResolveLocalNetIdFromManifest(ulong localAccountId, out ulong localNetId)
+    {
+        SavedIdentityManifest? manifest = LoadSavedIdentityManifest(localAccountId);
+        if (manifest == null)
+        {
+            localNetId = 0UL;
+            return false;
+        }
+
+        if (manifest.LocalDefaultNetId > 0UL
+            && (manifest.AllNetIds.Contains(manifest.LocalDefaultNetId)
+                || manifest.Players.Any(entry => entry.NetId == manifest.LocalDefaultNetId)))
+        {
+            localNetId = manifest.LocalDefaultNetId;
+            BetaDirectConnectConfigService.UpdateLastAssignedNetId(localNetId);
+            return true;
+        }
+
+        localNetId = 0UL;
+        return false;
     }
 
     private static ReadSaveResult<SerializableRun> LoadLocalMultiplayerRunSave(ulong localAccountId, ulong localNetId)
@@ -1576,6 +1716,13 @@ public static class BetaDirectConnectPatches
 
         SavedIdentityManifest manifest = new()
         {
+            LocalDefaultNetId = GetCurrentRuntimeLocalNetId(),
+            AllNetIds = save.Players
+                .Select(player => player.NetId)
+                .Where(netId => netId > 0UL)
+                .Distinct()
+                .OrderBy(netId => netId)
+                .ToList(),
             Players = save.Players
                 .Select(player => new SavedIdentityEntry
                 {
@@ -1593,18 +1740,30 @@ public static class BetaDirectConnectPatches
 
     private static ulong ResolveSavedClientId(ulong netId)
     {
+        ulong runtimeLocalNetId = GetCurrentRuntimeLocalNetId();
+        ulong localAccountId = GetLocalAccountId();
+        if (runtimeLocalNetId > 0UL && netId == runtimeLocalNetId)
+        {
+            return localAccountId;
+        }
+
         if (DirectConnectIdentityService.TryGetClientId(netId, out ulong clientId) && clientId > 0UL)
         {
             return clientId;
         }
 
-        ulong localAccountId = GetLocalAccountId();
         ulong localNetId = GetPreferredLocalNetIdForLoad();
         return netId == localNetId ? localAccountId : 0UL;
     }
 
     private static string ResolveSavedDisplayId(ulong netId)
     {
+        ulong runtimeLocalNetId = GetCurrentRuntimeLocalNetId();
+        if (runtimeLocalNetId > 0UL && netId == runtimeLocalNetId)
+        {
+            return BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId);
+        }
+
         if (DirectConnectIdentityService.TryGetDisplayName(netId, out string displayId))
         {
             return displayId;
@@ -1636,6 +1795,11 @@ public static class BetaDirectConnectPatches
                 return null;
             }
 
+            manifest.AllNetIds = manifest.AllNetIds
+                .Where(netId => netId > 0UL)
+                .Distinct()
+                .OrderBy(netId => netId)
+                .ToList();
             manifest.Players = manifest.Players
                 .Where(entry => entry.NetId > 0UL)
                 .OrderBy(entry => entry.NetId)
@@ -1668,6 +1832,17 @@ public static class BetaDirectConnectPatches
             return $"{(isSelf ? "[You] " : string.Empty)}clientId={clientText}  netId={entry.NetId}  displayId={displayText}";
         });
         return string.Join('\n', lines);
+    }
+
+    private static ulong GetCurrentRuntimeLocalNetId()
+    {
+        ulong? localContextNetId = LocalContext.NetId;
+        if (localContextNetId.HasValue && localContextNetId.Value > 0UL)
+        {
+            return localContextNetId.Value;
+        }
+
+        return SafeGetNetId(RunManager.Instance?.NetService);
     }
 
     private static bool ShouldForceClientScopedPath(PlatformType? platformOverride, ulong? userIdOverride, out ulong clientId)
@@ -1816,6 +1991,182 @@ public static class BetaDirectConnectPatches
     private static bool HasPeerInputState(PeerInputSynchronizer synchronizer, ulong playerId)
     {
         return PeerInputGetStateForPlayerMethod.Invoke(synchronizer, new object?[] { playerId }) != null;
+    }
+
+    private static void HandleLoadedRunClientConnectedUsingTransportPeer(LoadRunLobby lobby, ulong transportPeerId)
+    {
+        MegaCrit.Sts2.Core.Logging.Logger logger = (MegaCrit.Sts2.Core.Logging.Logger)LoadRunLobbyLoggerField.GetValue(lobby)!;
+        logger.Info($"Client {transportPeerId} connected in direct-connect loaded lobby. Waiting for logical netId assignment before save membership validation.");
+
+        InitialGameInfoMessage message = InitialGameInfoMessage.Basic();
+        message.sessionState = RunSessionState.InLoadedLobby;
+        message.gameMode = lobby.GameMode;
+
+        if ((bool)LoadRunLobbyIsBeginningRunField.GetValue(lobby)!)
+        {
+            message.connectionFailureReason = ConnectionFailureReason.RunInProgress;
+            lobby.NetService.SendMessage(message, transportPeerId);
+            logger.Warn($"Client {transportPeerId} connected but we are already beginning the run!");
+            ((INetHostGameService)lobby.NetService).DisconnectClient(transportPeerId, NetError.RunInProgress);
+            return;
+        }
+
+        AddConnectingPlayer(lobby, transportPeerId);
+        lobby.NetService.SendMessage(message, transportPeerId);
+    }
+
+    private static void HandleClientLoadJoinRequestMessageUsingLogicalNetId(LoadRunLobby lobby, ulong senderId)
+    {
+        INetHostGameService netHostGameService = (INetHostGameService)lobby.NetService;
+        MegaCrit.Sts2.Core.Logging.Logger logger = (MegaCrit.Sts2.Core.Logging.Logger)LoadRunLobbyLoggerField.GetValue(lobby)!;
+
+        try
+        {
+            ulong logicalNetId = ResolveLogicalPeerIdOrFallback(lobby.NetService, senderId);
+            MainFile.Logger.Info(
+                $"[LoadedRunTrace] ClientLoadJoinRequest transportPeerId={senderId} logicalNetId={logicalNetId} " +
+                $"saved=[{string.Join(", ", lobby.Run.Players.Select(player => player.NetId).OrderBy(id => id))}]");
+
+            if (lobby.Run.Players.FindIndex((SerializablePlayer p) => p.NetId == logicalNetId) < 0)
+            {
+                logger.Warn($"Client transportPeerId={senderId} logicalNetId={logicalNetId} sent ClientLoadJoinRequestMessage but they are not in the loaded run!");
+                netHostGameService.DisconnectClient(senderId, NetError.NotInSaveGame);
+                return;
+            }
+
+            logger.Info($"Received ClientLoadJoinRequestMessage for transportPeerId={senderId} logicalNetId={logicalNetId}");
+            lobby.ConnectedPlayerIds.Add(logicalNetId);
+            lobby.LobbyListener.PlayerConnected(logicalNetId);
+            ClientLoadJoinResponseMessage response = new()
+            {
+                serializableRun = lobby.Run,
+                playersAlreadyConnected = lobby.ConnectedPlayerIds.ToList()
+            };
+            logger.Debug($"Sending ClientLoadJoinResponseMessage to transportPeerId={senderId} logicalNetId={logicalNetId}");
+            netHostGameService.SendMessage(response, senderId);
+            netHostGameService.SetPeerReadyForBroadcasting(senderId);
+
+            PlayerReconnectedMessage reconnected = new()
+            {
+                playerId = logicalNetId
+            };
+            foreach (ulong connectedPlayerId in lobby.ConnectedPlayerIds)
+            {
+                if (connectedPlayerId != logicalNetId && connectedPlayerId != lobby.NetService.NetId)
+                {
+                    logger.Debug($"Sending PlayerReconnectedMessage for logicalNetId={logicalNetId} to {connectedPlayerId}");
+                    netHostGameService.SendMessage(reconnected, connectedPlayerId);
+                }
+            }
+
+            RemoveConnectingPlayerById(lobby, logicalNetId);
+            RemoveConnectingPlayerById(lobby, senderId);
+        }
+        catch
+        {
+            netHostGameService.DisconnectClient(senderId, NetError.InternalError);
+            throw;
+        }
+    }
+
+    private static void HandleLoadedRunPlayerReadyUsingLogicalNetId(LoadRunLobby lobby, MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby.LobbyPlayerSetReadyMessage message, ulong senderId)
+    {
+        ulong logicalNetId = ResolveLogicalPeerIdOrFallback(lobby.NetService, senderId);
+        MegaCrit.Sts2.Core.Logging.Logger logger = (MegaCrit.Sts2.Core.Logging.Logger)LoadRunLobbyLoggerField.GetValue(lobby)!;
+        logger.Debug($"Received LobbyPlayerSetReadyMessage for transportPeerId={senderId} logicalNetId={logicalNetId} with value {message.ready}");
+
+        HashSet<ulong> readyPlayers = GetLoadedRunReadyPlayers(lobby);
+        if (message.ready)
+        {
+            if (readyPlayers.Add(logicalNetId))
+            {
+                lobby.LobbyListener.PlayerReadyChanged(logicalNetId);
+            }
+        }
+        else if (readyPlayers.Remove(logicalNetId))
+        {
+            lobby.LobbyListener.PlayerReadyChanged(logicalNetId);
+        }
+
+        LoadRunLobbyReadyPlayersField.SetValue(lobby, readyPlayers);
+        BeginLoadedRunIfAllPlayersReady(lobby);
+    }
+
+    private static void HandleLoadedRunClientDisconnectedUsingLogicalNetId(LoadRunLobby lobby, ulong playerId, NetErrorInfo info)
+    {
+        ulong logicalNetId = ResolveLogicalPeerIdOrFallback(lobby.NetService, playerId);
+        if (!lobby.ConnectedPlayerIds.Contains(logicalNetId))
+        {
+            return;
+        }
+
+        MegaCrit.Sts2.Core.Logging.Logger logger = (MegaCrit.Sts2.Core.Logging.Logger)LoadRunLobbyLoggerField.GetValue(lobby)!;
+        logger.Info($"Client transportPeerId={playerId} logicalNetId={logicalNetId} disconnected, reason: {info.GetReason()}");
+        PlayerLeftMessage message = new()
+        {
+            playerId = logicalNetId
+        };
+        lobby.NetService.SendMessage(message);
+        lobby.ConnectedPlayerIds.Remove(logicalNetId);
+        HashSet<ulong> readyPlayers = GetLoadedRunReadyPlayers(lobby);
+        readyPlayers.Remove(logicalNetId);
+        LoadRunLobbyReadyPlayersField.SetValue(lobby, readyPlayers);
+        RemoveConnectingPlayerById(lobby, logicalNetId);
+        RemoveConnectingPlayerById(lobby, playerId);
+        lobby.InputSynchronizer.OnPlayerDisconnected(logicalNetId);
+        lobby.LobbyListener.RemotePlayerDisconnected(logicalNetId);
+        BeginLoadedRunIfAllPlayersReady(lobby);
+    }
+
+    private static void AddConnectingPlayer(LoadRunLobby lobby, ulong playerId)
+    {
+        object connectingPlayer = Activator.CreateInstance(LoadRunLobbyConnectingPlayersField.FieldType.GetGenericArguments()[0])!;
+        FieldInfo idField = connectingPlayer.GetType().GetField("id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Could not find LoadRunLobby.ConnectingPlayer.id.");
+        FieldInfo tokenField = connectingPlayer.GetType().GetField("timeoutCancelToken", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Could not find LoadRunLobby.ConnectingPlayer.timeoutCancelToken.");
+        idField.SetValue(connectingPlayer, playerId);
+        tokenField.SetValue(connectingPlayer, new System.Threading.CancellationTokenSource());
+        ((System.Collections.IList)LoadRunLobbyConnectingPlayersField.GetValue(lobby)!).Add(connectingPlayer);
+    }
+
+    private static void RemoveConnectingPlayerById(LoadRunLobby lobby, ulong playerId)
+    {
+        if (LoadRunLobbyConnectingPlayersField.GetValue(lobby) is not System.Collections.IList connectingPlayers)
+        {
+            return;
+        }
+
+        for (int i = connectingPlayers.Count - 1; i >= 0; i--)
+        {
+            object entry = connectingPlayers[i]!;
+            FieldInfo? idField = entry.GetType().GetField("id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            FieldInfo? tokenField = entry.GetType().GetField("timeoutCancelToken", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (idField == null || (ulong)idField.GetValue(entry)! != playerId)
+            {
+                continue;
+            }
+
+            (tokenField?.GetValue(entry) as System.Threading.CancellationTokenSource)?.Cancel();
+            connectingPlayers.RemoveAt(i);
+        }
+    }
+
+    private static void BeginLoadedRunIfAllPlayersReady(LoadRunLobby lobby)
+    {
+        if (GetConnectingPlayerCount(lobby) <= 0
+            && (lobby.NetService.Type == NetGameType.Host || lobby.NetService.Type == NetGameType.Singleplayer)
+            && !lobby.ConnectedPlayerIds.Except(GetLoadedRunReadyPlayers(lobby)).Any())
+        {
+            TaskHelper.RunSafely((Task)AccessTools.Method(typeof(LoadRunLobby), "TryBeginRun")!.Invoke(lobby, null)!);
+        }
+    }
+
+    private static ulong ResolveLogicalPeerIdOrFallback(INetGameService service, ulong peerOrLogicalId)
+    {
+        return DirectConnectIdentityService.TryResolveLogicalPeerId(service, peerOrLogicalId, out ulong logicalPeerId)
+            ? logicalPeerId
+            : peerOrLogicalId;
     }
 
     private static HashSet<ulong> GetSavedPlayerIds()
