@@ -1615,12 +1615,6 @@ internal sealed class LauncherConfig
 internal static class GitModUpdater
 {
     private static readonly string[] ManagedPathSpecs = ["mods", ".gitignore"];
-    private const string LauncherGitIgnoreContents = """
-*
-!.gitignore
-!mods/
-!mods/**
-""";
 
     public static UpdateModsResult Run(string gameDirectory, string remoteUrl)
     {
@@ -1641,7 +1635,6 @@ internal static class GitModUpdater
             RunGit(gameDirectory, log, "init");
         }
 
-        EnsureManagedGitIgnore(gameDirectory);
         ConfigureSparseCheckout(gameDirectory, log);
 
         string currentRemote = TryGetGitOutput(gameDirectory, "remote", "get-url", "origin");
@@ -1710,12 +1703,6 @@ internal static class GitModUpdater
         }
 
         return "/" + pathSpec.Trim('/').Replace('\\', '/') + "/";
-    }
-
-    private static void EnsureManagedGitIgnore(string gameDirectory)
-    {
-        string gitIgnorePath = Path.Combine(gameDirectory, ".gitignore");
-        File.WriteAllText(gitIgnorePath, LauncherGitIgnoreContents.ReplaceLineEndings(Environment.NewLine), Encoding.UTF8);
     }
 
     private static bool TryRunGit(string workdir, StringBuilder log, params string[] args)
@@ -1831,8 +1818,6 @@ internal static class GitRemotePublisher
             return PublishRemoteResult.Fail("未在 PATH 中找到 git，无法推送。");
         }
 
-        EnsureManagedGitIgnore(gameDirectory);
-
         string branch = TryGetGitValue(gameDirectory, "branch", "--show-current");
         if (string.IsNullOrWhiteSpace(branch))
         {
@@ -1889,18 +1874,6 @@ internal static class GitRemotePublisher
         {
             return string.Empty;
         }
-    }
-
-    private static void EnsureManagedGitIgnore(string gameDirectory)
-    {
-        string gitIgnorePath = Path.Combine(gameDirectory, ".gitignore");
-        const string contents = """
-*
-!.gitignore
-!mods/
-!mods/**
-""";
-        File.WriteAllText(gitIgnorePath, contents.ReplaceLineEndings(Environment.NewLine), Encoding.UTF8);
     }
 
     private static void RunGit(string workdir, StringBuilder log, params string[] args)
