@@ -759,17 +759,10 @@ internal sealed record InstalledMod(
             return mods;
         }
 
-        foreach (string modDir in Directory.EnumerateDirectories(modsDirectory))
+        foreach (string manifestPath in EnumerateManifestPaths(modsDirectory))
         {
             try
             {
-                string modFolderName = Path.GetFileName(modDir);
-                string manifestPath = Path.Combine(modDir, $"{modFolderName}.json");
-                if (!File.Exists(manifestPath))
-                {
-                    continue;
-                }
-
                 using FileStream stream = File.OpenRead(manifestPath);
                 JsonNode? node = JsonNode.Parse(stream);
                 if (node is not JsonObject manifest)
@@ -797,6 +790,12 @@ internal sealed record InstalledMod(
             .OrderByDescending(mod => string.Equals(mod.Id, "BaseLib", StringComparison.OrdinalIgnoreCase))
             .ThenBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static IEnumerable<string> EnumerateManifestPaths(string modsDirectory)
+    {
+        return Directory.EnumerateFiles(modsDirectory, "*.json", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
     }
 }
 
@@ -971,6 +970,14 @@ internal sealed class LauncherConfig
 
 internal static class GitModUpdater
 {
+    private static readonly string[] ManagedPathSpecs = ["mods", ".gitignore"];
+    private const string LauncherGitIgnoreContents = """
+*
+!.gitignore
+!mods/
+!mods/**
+""";
+
     public static UpdateModsResult Run(string gameDirectory, string remoteUrl)
     {
         if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
@@ -989,6 +996,9 @@ internal static class GitModUpdater
         {
             RunGit(gameDirectory, log, "init");
         }
+
+        EnsureManagedGitIgnore(gameDirectory);
+        ConfigureSparseCheckout(gameDirectory, log);
 
         string currentRemote = TryGetGitOutput(gameDirectory, "remote", "get-url", "origin");
         if (string.IsNullOrWhiteSpace(currentRemote))
@@ -1036,6 +1046,32 @@ internal static class GitModUpdater
         {
             return false;
         }
+    }
+
+    private static void ConfigureSparseCheckout(string gameDirectory, StringBuilder log)
+    {
+        TryRunGit(gameDirectory, log, "config", "core.sparseCheckout", "true");
+        string infoDir = Path.Combine(gameDirectory, ".git", "info");
+        Directory.CreateDirectory(infoDir);
+        string sparseCheckoutPath = Path.Combine(infoDir, "sparse-checkout");
+        string sparseContents = string.Join(Environment.NewLine, ManagedPathSpecs.Select(ToSparseCheckoutPattern)) + Environment.NewLine;
+        File.WriteAllText(sparseCheckoutPath, sparseContents, Encoding.UTF8);
+    }
+
+    private static string ToSparseCheckoutPattern(string pathSpec)
+    {
+        if (string.Equals(pathSpec, ".gitignore", StringComparison.OrdinalIgnoreCase))
+        {
+            return "/.gitignore";
+        }
+
+        return "/" + pathSpec.Trim('/').Replace('\\', '/') + "/";
+    }
+
+    private static void EnsureManagedGitIgnore(string gameDirectory)
+    {
+        string gitIgnorePath = Path.Combine(gameDirectory, ".gitignore");
+        File.WriteAllText(gitIgnorePath, LauncherGitIgnoreContents.ReplaceLineEndings(Environment.NewLine), Encoding.UTF8);
     }
 
     private static bool TryRunGit(string workdir, StringBuilder log, params string[] args)
@@ -1151,19 +1187,21 @@ internal static class GitRemotePublisher
             return PublishRemoteResult.Fail("未在 PATH 中找到 git，无法推送。");
         }
 
+        EnsureManagedGitIgnore(gameDirectory);
+
         string branch = TryGetGitValue(gameDirectory, "branch", "--show-current");
         if (string.IsNullOrWhiteSpace(branch))
         {
             branch = "main";
         }
 
-        string status = TryGetGitValue(gameDirectory, "status", "--porcelain");
+        string status = TryGetGitValue(gameDirectory, "status", "--porcelain", "--", "mods", ".gitignore");
         bool hasChanges = !string.IsNullOrWhiteSpace(status);
 
         StringBuilder log = new();
         if (hasChanges)
         {
-            RunGit(gameDirectory, log, "add", "-A");
+            RunGit(gameDirectory, log, "add", "-A", "--", "mods", ".gitignore");
             string commitMessage = $"Mod update {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
             RunGit(gameDirectory, log, "commit", "-m", commitMessage);
         }
@@ -1207,6 +1245,18 @@ internal static class GitRemotePublisher
         {
             return string.Empty;
         }
+    }
+
+    private static void EnsureManagedGitIgnore(string gameDirectory)
+    {
+        string gitIgnorePath = Path.Combine(gameDirectory, ".gitignore");
+        const string contents = """
+*
+!.gitignore
+!mods/
+!mods/**
+""";
+        File.WriteAllText(gitIgnorePath, contents.ReplaceLineEndings(Environment.NewLine), Encoding.UTF8);
     }
 
     private static void RunGit(string workdir, StringBuilder log, params string[] args)
