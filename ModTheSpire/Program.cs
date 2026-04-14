@@ -16,12 +16,20 @@ internal static class Program
     }
 }
 
+internal sealed class BufferedListView : ListView
+{
+    public BufferedListView()
+    {
+        DoubleBuffered = true;
+    }
+}
+
 internal sealed class MainForm : Form
 {
     private readonly ComboBox _accountComboBox;
     private readonly Label _settingsPathLabel;
     private readonly Label _modsPathLabel;
-    private readonly ListView _modListView;
+    private readonly BufferedListView _modListView;
     private readonly CheckBox _favoritesFirstCheckBox;
     private readonly Button _refreshButton;
     private readonly Button _updateModsButton;
@@ -29,7 +37,6 @@ internal sealed class MainForm : Form
     private readonly Button _deleteAccountButton;
     private readonly Button _selectAllButton;
     private readonly Button _selectNoneButton;
-    private readonly Button _toggleFavoriteButton;
     private readonly Button _showDependencyGraphButton;
     private readonly Button _saveButton;
     private readonly Button _launchButton;
@@ -38,6 +45,7 @@ internal sealed class MainForm : Form
     private readonly Label _statusLabel;
     private readonly bool _canPushRemote;
     private bool _isApplyingModSelection;
+    private bool _isFavoriteClickInProgress;
 
     private LauncherState _state = LauncherState.Empty;
 
@@ -163,7 +171,7 @@ internal sealed class MainForm : Form
         };
         infoPanel.Controls.Add(_modsPathLabel);
 
-        _modListView = new ListView
+        _modListView = new BufferedListView
         {
             Dock = DockStyle.Fill,
             CheckBoxes = true,
@@ -171,6 +179,8 @@ internal sealed class MainForm : Form
             View = View.Details,
         };
         _modListView.ItemChecked += (_, _) => OnModItemChecked();
+        _modListView.MouseDown += ModListView_MouseDown;
+        _modListView.MouseUp += ModListView_MouseUp;
         _modListView.Columns.Add("启用", 70);
         _modListView.Columns.Add("收藏", 60);
         _modListView.Columns.Add("名称", 260);
@@ -205,19 +215,10 @@ internal sealed class MainForm : Form
         _selectNoneButton.Click += (_, _) => SetAllChecked(false);
         actionBar.Controls.Add(_selectNoneButton);
 
-        _toggleFavoriteButton = new Button
-        {
-            AutoSize = true,
-            Margin = new Padding(18, 3, 3, 3),
-            Text = "切换收藏",
-        };
-        _toggleFavoriteButton.Click += (_, _) => ToggleFavoriteForSelectedMod();
-        actionBar.Controls.Add(_toggleFavoriteButton);
-
         _favoritesFirstCheckBox = new CheckBox
         {
             AutoSize = true,
-            Margin = new Padding(12, 8, 0, 0),
+            Margin = new Padding(18, 8, 0, 0),
             Text = "收藏置顶",
         };
         _favoritesFirstCheckBox.CheckedChanged += FavoritesFirstCheckBox_CheckedChanged;
@@ -377,6 +378,48 @@ internal sealed class MainForm : Form
         OnFavoritesFirstChanged();
     }
 
+    private void ModListView_MouseDown(object? sender, MouseEventArgs e)
+    {
+        _isFavoriteClickInProgress = IsFavoriteCellHit(e.Location);
+        if (_isFavoriteClickInProgress)
+        {
+            _modListView.SelectedItems.Clear();
+        }
+    }
+
+    private void ModListView_MouseUp(object? sender, MouseEventArgs e)
+    {
+        ListViewHitTestInfo hit = _modListView.HitTest(e.Location);
+        if (hit.Item?.Tag is not InstalledMod mod || hit.SubItem is null)
+        {
+            _isFavoriteClickInProgress = false;
+            return;
+        }
+
+        int subItemIndex = hit.Item.SubItems.IndexOf(hit.SubItem);
+        if (subItemIndex != 1)
+        {
+            _isFavoriteClickInProgress = false;
+            return;
+        }
+
+        ToggleFavorite(mod.Id, hit.Item);
+        _modListView.SelectedItems.Clear();
+        BeginInvoke(new Action(() =>
+        {
+            _modListView.SelectedItems.Clear();
+            _isFavoriteClickInProgress = false;
+        }));
+    }
+
+    private bool IsFavoriteCellHit(Point location)
+    {
+        ListViewHitTestInfo hit = _modListView.HitTest(location);
+        return hit.Item is not null
+            && hit.SubItem is not null
+            && hit.Item.SubItems.IndexOf(hit.SubItem) == 1;
+    }
+
     private void OnFavoritesFirstChanged()
     {
         if (_state.Preferences.FavoritesFirst == _favoritesFirstCheckBox.Checked)
@@ -408,26 +451,69 @@ internal sealed class MainForm : Form
         return ordered.ToList();
     }
 
-    private void ToggleFavoriteForSelectedMod()
+    private void ToggleFavorite(string modId, ListViewItem? existingItem = null)
     {
-        if (_modListView.SelectedItems.Count == 0 || _modListView.SelectedItems[0].Tag is not InstalledMod selectedMod)
+        LauncherPreferences updatedPreferences = _state.Preferences.ToggleFavorite(modId);
+        bool isFavorite = updatedPreferences.FavoriteModIds.Contains(modId);
+        updatedPreferences.Save(_state.GameDirectory);
+
+        List<InstalledMod> updatedMods = _state.AvailableMods
+            .Select(mod => string.Equals(mod.Id, modId, StringComparison.OrdinalIgnoreCase)
+                ? mod with { IsFavorite = isFavorite }
+                : mod)
+            .ToList();
+        InstalledMod toggledMod = updatedMods.First(mod => string.Equals(mod.Id, modId, StringComparison.OrdinalIgnoreCase));
+        _state = _state.WithPreferences(updatedPreferences).WithUpdatedMods(updatedMods);
+
+        if (existingItem is not null)
         {
-            SetStatus("请先选中一个模组再切换收藏。", isError: true);
+            _modListView.BeginUpdate();
+            try
+            {
+                existingItem.Tag = toggledMod;
+                UpdateFavoriteCell(existingItem, toggledMod);
+
+                if (isFavorite && _state.Preferences.FavoritesFirst)
+                {
+                    MoveItemToSortedPosition(existingItem, toggledMod);
+                }
+            }
+            finally
+            {
+                _modListView.EndUpdate();
+            }
+        }
+
+        SetStatus(isFavorite
+            ? $"已收藏 {toggledMod.Name}。"
+            : $"已取消收藏 {toggledMod.Name}。");
+    }
+
+    private static void UpdateFavoriteCell(ListViewItem item, InstalledMod mod)
+    {
+        item.SubItems[1].Text = mod.IsFavorite ? "★" : "";
+    }
+
+    private void MoveItemToSortedPosition(ListViewItem item, InstalledMod mod)
+    {
+        int currentIndex = item.Index;
+        List<InstalledMod> orderedMods = GetOrderedMods(_state.AvailableMods);
+        int targetIndex = orderedMods.FindIndex(candidate => string.Equals(candidate.Id, mod.Id, StringComparison.OrdinalIgnoreCase));
+        if (targetIndex < 0 || targetIndex == currentIndex)
+        {
             return;
         }
 
-        LauncherPreferences updatedPreferences = _state.Preferences.ToggleFavorite(selectedMod.Id);
-        updatedPreferences.Save(_state.GameDirectory);
-        _state = _state.WithPreferences(updatedPreferences).ReloadMods();
-        RebindMods();
-        SetStatus(updatedPreferences.FavoriteModIds.Contains(selectedMod.Id)
-            ? $"已收藏 {selectedMod.Name}。"
-            : $"已取消收藏 {selectedMod.Name}。");
+        _modListView.Items.RemoveAt(currentIndex);
+        _modListView.Items.Insert(targetIndex, item);
+        item.Selected = false;
+        item.Focused = false;
+        item.EnsureVisible();
     }
 
     private void OnModItemChecked()
     {
-        if (_isApplyingModSelection)
+        if (_isApplyingModSelection || _isFavoriteClickInProgress)
         {
             return;
         }
@@ -462,34 +548,42 @@ internal sealed class MainForm : Form
         Dictionary<string, InstalledMod> modMap = _state.AvailableMods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
         HashSet<string> requiredIds = GetRequiredDependencyIds(selectedIds, modMap);
         missingDependencies ??= GetMissingDependencies(selectedIds, modMap);
+        bool selectionChanged = _state.AvailableMods.Any(mod => mod.IsEnabled != selectedIds.Contains(mod.Id));
 
+        _modListView.BeginUpdate();
         try
         {
             _isApplyingModSelection = true;
-            foreach (ListViewItem item in _modListView.Items)
+            if (selectionChanged)
             {
-                if (item.Tag is not InstalledMod mod)
+                foreach (ListViewItem item in _modListView.Items)
                 {
-                    continue;
-                }
+                    if (item.Tag is not InstalledMod mod)
+                    {
+                        continue;
+                    }
 
-                bool shouldEnable = selectedIds.Contains(mod.Id);
-                if (item.Checked != shouldEnable)
-                {
-                    item.Checked = shouldEnable;
+                    bool shouldEnable = selectedIds.Contains(mod.Id);
+                    if (item.Checked != shouldEnable)
+                    {
+                        item.Checked = shouldEnable;
+                    }
                 }
             }
+
+            List<InstalledMod> updatedMods = selectionChanged
+                ? _state.AvailableMods
+                    .Select(mod => mod with { IsEnabled = selectedIds.Contains(mod.Id) })
+                    .ToList()
+                : _state.AvailableMods;
+            _state = _state.WithUpdatedMods(updatedMods);
+            RefreshDependencyPresentation(requiredIds, missingDependencies);
         }
         finally
         {
             _isApplyingModSelection = false;
+            _modListView.EndUpdate();
         }
-
-        List<InstalledMod> updatedMods = _state.AvailableMods
-            .Select(mod => mod with { IsEnabled = selectedIds.Contains(mod.Id) })
-            .ToList();
-        _state = _state.WithUpdatedMods(updatedMods);
-        RefreshDependencyPresentation(requiredIds, missingDependencies);
 
         if (!string.IsNullOrWhiteSpace(statusMessage))
         {
@@ -937,7 +1031,6 @@ internal sealed class MainForm : Form
         _deleteAccountButton.Enabled = !isBusy;
         _selectAllButton.Enabled = !isBusy;
         _selectNoneButton.Enabled = !isBusy;
-        _toggleFavoriteButton.Enabled = !isBusy;
         _showDependencyGraphButton.Enabled = !isBusy;
         _saveButton.Enabled = !isBusy;
         _launchButton.Enabled = !isBusy;
