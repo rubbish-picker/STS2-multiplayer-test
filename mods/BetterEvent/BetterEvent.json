@@ -1,7 +1,7 @@
 {
   "id": "BetterEvent",
   "name": "BetterEvent",
-  "author": "User",
+  "author": "rubbish-picker",
   "description": "Framework mod for adding custom events directly into the normal Slay the Spire 2 event pool.",
   "version": "v0.1.0",
   "has_pck": true,

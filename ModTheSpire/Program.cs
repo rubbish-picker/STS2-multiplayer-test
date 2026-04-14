@@ -22,18 +22,22 @@ internal sealed class MainForm : Form
     private readonly Label _settingsPathLabel;
     private readonly Label _modsPathLabel;
     private readonly ListView _modListView;
+    private readonly CheckBox _favoritesFirstCheckBox;
     private readonly Button _refreshButton;
     private readonly Button _updateModsButton;
     private readonly Button _pushRemoteButton;
     private readonly Button _deleteAccountButton;
     private readonly Button _selectAllButton;
     private readonly Button _selectNoneButton;
+    private readonly Button _toggleFavoriteButton;
+    private readonly Button _showDependencyGraphButton;
     private readonly Button _saveButton;
     private readonly Button _launchButton;
     private readonly Button _saveAndLaunchButton;
     private readonly CheckBox _updateBeforeLaunchCheckBox;
     private readonly Label _statusLabel;
     private readonly bool _canPushRemote;
+    private bool _isApplyingModSelection;
 
     private LauncherState _state = LauncherState.Empty;
 
@@ -166,11 +170,15 @@ internal sealed class MainForm : Form
             FullRowSelect = true,
             View = View.Details,
         };
+        _modListView.ItemChecked += (_, _) => OnModItemChecked();
         _modListView.Columns.Add("启用", 70);
+        _modListView.Columns.Add("收藏", 60);
         _modListView.Columns.Add("名称", 260);
         _modListView.Columns.Add("ID", 220);
         _modListView.Columns.Add("作者", 160);
-        _modListView.Columns.Add("位置", 360);
+        _modListView.Columns.Add("依赖", 220);
+        _modListView.Columns.Add("状态", 220);
+        _modListView.Columns.Add("位置", 320);
         root.Controls.Add(_modListView, 0, 2);
 
         FlowLayoutPanel actionBar = new()
@@ -196,6 +204,33 @@ internal sealed class MainForm : Form
         };
         _selectNoneButton.Click += (_, _) => SetAllChecked(false);
         actionBar.Controls.Add(_selectNoneButton);
+
+        _toggleFavoriteButton = new Button
+        {
+            AutoSize = true,
+            Margin = new Padding(18, 3, 3, 3),
+            Text = "切换收藏",
+        };
+        _toggleFavoriteButton.Click += (_, _) => ToggleFavoriteForSelectedMod();
+        actionBar.Controls.Add(_toggleFavoriteButton);
+
+        _favoritesFirstCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Margin = new Padding(12, 8, 0, 0),
+            Text = "收藏置顶",
+        };
+        _favoritesFirstCheckBox.CheckedChanged += FavoritesFirstCheckBox_CheckedChanged;
+        actionBar.Controls.Add(_favoritesFirstCheckBox);
+
+        _showDependencyGraphButton = new Button
+        {
+            AutoSize = true,
+            Margin = new Padding(12, 3, 3, 3),
+            Text = "依赖关系图",
+        };
+        _showDependencyGraphButton.Click += (_, _) => ShowDependencyGraph();
+        actionBar.Controls.Add(_showDependencyGraphButton);
 
         _saveButton = new Button
         {
@@ -244,6 +279,9 @@ internal sealed class MainForm : Form
             _state = LauncherState.Load();
             RebindAccounts();
             RebindMods();
+            _favoritesFirstCheckBox.CheckedChanged -= FavoritesFirstCheckBox_CheckedChanged;
+            _favoritesFirstCheckBox.Checked = _state.Preferences.FavoritesFirst;
+            _favoritesFirstCheckBox.CheckedChanged += FavoritesFirstCheckBox_CheckedChanged;
             SetStatus($"已发现 {_state.AvailableMods.Count} 个本地 mod。");
         }
         catch (Exception ex)
@@ -293,19 +331,23 @@ internal sealed class MainForm : Form
     {
         _modListView.BeginUpdate();
         _modListView.Items.Clear();
-        foreach (InstalledMod mod in _state.AvailableMods)
+        foreach (InstalledMod mod in GetOrderedMods(_state.AvailableMods))
         {
             ListViewItem item = new("")
             {
                 Checked = mod.IsEnabled,
                 Tag = mod,
             };
+            item.SubItems.Add(mod.IsFavorite ? "★" : "");
             item.SubItems.Add(mod.Name);
             item.SubItems.Add(mod.Id);
             item.SubItems.Add(mod.Author);
+            item.SubItems.Add(mod.Dependencies.Count == 0 ? "-" : string.Join(", ", mod.Dependencies));
+            item.SubItems.Add("");
             item.SubItems.Add(mod.ManifestPath);
             _modListView.Items.Add(item);
         }
+        RefreshDependencyPresentation();
         _modListView.EndUpdate();
         UpdatePathLabels();
     }
@@ -330,12 +372,303 @@ internal sealed class MainForm : Form
         _modsPathLabel.Text = $"游戏 mods 目录: {_state.ModsDirectory}";
     }
 
-    private void SetAllChecked(bool isChecked)
+    private void FavoritesFirstCheckBox_CheckedChanged(object? sender, EventArgs e)
     {
+        OnFavoritesFirstChanged();
+    }
+
+    private void OnFavoritesFirstChanged()
+    {
+        if (_state.Preferences.FavoritesFirst == _favoritesFirstCheckBox.Checked)
+        {
+            return;
+        }
+
+        LauncherPreferences updatedPreferences = _state.Preferences with
+        {
+            FavoritesFirst = _favoritesFirstCheckBox.Checked,
+        };
+        updatedPreferences.Save(_state.GameDirectory);
+        _state = _state.WithPreferences(updatedPreferences);
+        RebindMods();
+        SetStatus(_favoritesFirstCheckBox.Checked ? "已开启收藏置顶。" : "已关闭收藏置顶。");
+    }
+
+    private List<InstalledMod> GetOrderedMods(IEnumerable<InstalledMod> mods)
+    {
+        IEnumerable<InstalledMod> ordered = mods;
+        if (_state.Preferences.FavoritesFirst)
+        {
+            ordered = ordered
+                .OrderByDescending(mod => mod.IsFavorite)
+                .ThenByDescending(mod => string.Equals(mod.Id, "BaseLib", StringComparison.OrdinalIgnoreCase))
+                .ThenBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return ordered.ToList();
+    }
+
+    private void ToggleFavoriteForSelectedMod()
+    {
+        if (_modListView.SelectedItems.Count == 0 || _modListView.SelectedItems[0].Tag is not InstalledMod selectedMod)
+        {
+            SetStatus("请先选中一个模组再切换收藏。", isError: true);
+            return;
+        }
+
+        LauncherPreferences updatedPreferences = _state.Preferences.ToggleFavorite(selectedMod.Id);
+        updatedPreferences.Save(_state.GameDirectory);
+        _state = _state.WithPreferences(updatedPreferences).ReloadMods();
+        RebindMods();
+        SetStatus(updatedPreferences.FavoriteModIds.Contains(selectedMod.Id)
+            ? $"已收藏 {selectedMod.Name}。"
+            : $"已取消收藏 {selectedMod.Name}。");
+    }
+
+    private void OnModItemChecked()
+    {
+        if (_isApplyingModSelection)
+        {
+            return;
+        }
+
+        BeginInvoke(new Action(ResolveSelectionAfterUserChange));
+    }
+
+    private void ResolveSelectionAfterUserChange()
+    {
+        if (_isApplyingModSelection)
+        {
+            return;
+        }
+
+        Dictionary<string, InstalledMod> modMap = _state.AvailableMods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> selectedIds = new(StringComparer.OrdinalIgnoreCase);
         foreach (ListViewItem item in _modListView.Items)
         {
-            item.Checked = isChecked;
+            if (item.Tag is InstalledMod mod && item.Checked)
+            {
+                selectedIds.Add(mod.Id);
+            }
         }
+
+        HashSet<string> missingDependencies = GetMissingDependencies(selectedIds, modMap);
+        HashSet<string> autoSelected = ResolveEnabledIdsWithDependencies(selectedIds, modMap);
+        ApplyResolvedSelection(autoSelected, missingDependencies);
+    }
+
+    private void ApplyResolvedSelection(HashSet<string> selectedIds, HashSet<string>? missingDependencies = null, string? statusMessage = null)
+    {
+        Dictionary<string, InstalledMod> modMap = _state.AvailableMods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> requiredIds = GetRequiredDependencyIds(selectedIds, modMap);
+        missingDependencies ??= GetMissingDependencies(selectedIds, modMap);
+
+        try
+        {
+            _isApplyingModSelection = true;
+            foreach (ListViewItem item in _modListView.Items)
+            {
+                if (item.Tag is not InstalledMod mod)
+                {
+                    continue;
+                }
+
+                bool shouldEnable = selectedIds.Contains(mod.Id);
+                if (item.Checked != shouldEnable)
+                {
+                    item.Checked = shouldEnable;
+                }
+            }
+        }
+        finally
+        {
+            _isApplyingModSelection = false;
+        }
+
+        List<InstalledMod> updatedMods = _state.AvailableMods
+            .Select(mod => mod with { IsEnabled = selectedIds.Contains(mod.Id) })
+            .ToList();
+        _state = _state.WithUpdatedMods(updatedMods);
+        RefreshDependencyPresentation(requiredIds, missingDependencies);
+
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+        {
+            SetStatus(statusMessage);
+        }
+        else if (missingDependencies.Count > 0)
+        {
+            SetStatus($"存在缺失依赖: {string.Join(", ", missingDependencies)}", isError: true);
+        }
+    }
+
+    private void RefreshDependencyPresentation()
+    {
+        Dictionary<string, InstalledMod> modMap = _state.AvailableMods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> enabledIds = _state.AvailableMods
+            .Where(mod => mod.IsEnabled)
+            .Select(mod => mod.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> requiredIds = GetRequiredDependencyIds(enabledIds, modMap);
+        HashSet<string> missingDependencies = GetMissingDependencies(enabledIds, modMap);
+        RefreshDependencyPresentation(requiredIds, missingDependencies);
+    }
+
+    private void RefreshDependencyPresentation(HashSet<string> requiredIds, HashSet<string> missingDependencies)
+    {
+        HashSet<string> enabledIds = _state.AvailableMods
+            .Where(mod => mod.IsEnabled)
+            .Select(mod => mod.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, List<string>> dependentsById = BuildDependentsLookup(_state.AvailableMods, enabledIds);
+        foreach (ListViewItem item in _modListView.Items)
+        {
+            if (item.Tag is not InstalledMod mod)
+            {
+                continue;
+            }
+
+            item.SubItems[1].Text = mod.IsFavorite ? "★" : "";
+            item.SubItems[5].Text = mod.Dependencies.Count == 0 ? "-" : string.Join(", ", mod.Dependencies);
+            item.SubItems[6].Text = BuildDependencyStatus(mod, requiredIds, dependentsById, missingDependencies);
+
+            bool isMissingDependency = mod.Dependencies.Any(dep => missingDependencies.Contains(dep));
+            item.ForeColor = isMissingDependency ? Color.Firebrick : SystemColors.WindowText;
+            item.BackColor = requiredIds.Contains(mod.Id) ? Color.FromArgb(245, 245, 220) : SystemColors.Window;
+        }
+    }
+
+    private static string BuildDependencyStatus(
+        InstalledMod mod,
+        HashSet<string> requiredIds,
+        Dictionary<string, List<string>> dependentsById,
+        HashSet<string> missingDependencies)
+    {
+        List<string> parts = new();
+        List<string> missingForMod = mod.Dependencies.Where(missingDependencies.Contains).ToList();
+        if (missingForMod.Count > 0)
+        {
+            parts.Add("缺少: " + string.Join(", ", missingForMod));
+        }
+
+        if (requiredIds.Contains(mod.Id) && dependentsById.TryGetValue(mod.Id, out List<string>? dependents) && dependents.Count > 0)
+        {
+            parts.Add("被依赖: " + string.Join(", ", dependents.OrderBy(name => name, StringComparer.OrdinalIgnoreCase)));
+        }
+
+        return parts.Count == 0 ? "-" : string.Join(" | ", parts);
+    }
+
+    private static Dictionary<string, List<string>> BuildDependentsLookup(IEnumerable<InstalledMod> mods, HashSet<string> enabledIds)
+    {
+        HashSet<string> modIds = mods.Select(mod => mod.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, List<string>> dependents = new(StringComparer.OrdinalIgnoreCase);
+        foreach (InstalledMod mod in mods)
+        {
+            if (!enabledIds.Contains(mod.Id))
+            {
+                continue;
+            }
+
+            foreach (string dependency in mod.Dependencies.Where(modIds.Contains))
+            {
+                if (!dependents.TryGetValue(dependency, out List<string>? entries))
+                {
+                    entries = new List<string>();
+                    dependents[dependency] = entries;
+                }
+
+                entries.Add(mod.Id);
+            }
+        }
+
+        return dependents;
+    }
+
+    private static HashSet<string> ResolveEnabledIdsWithDependencies(HashSet<string> selectedIds, Dictionary<string, InstalledMod> modMap)
+    {
+        HashSet<string> resolved = new(selectedIds, StringComparer.OrdinalIgnoreCase);
+        Queue<string> queue = new(selectedIds);
+        while (queue.Count > 0)
+        {
+            string currentId = queue.Dequeue();
+            if (!modMap.TryGetValue(currentId, out InstalledMod? mod))
+            {
+                continue;
+            }
+
+            foreach (string dependency in mod.Dependencies)
+            {
+                if (modMap.ContainsKey(dependency) && resolved.Add(dependency))
+                {
+                    queue.Enqueue(dependency);
+                }
+            }
+        }
+
+        return resolved;
+    }
+
+    private static HashSet<string> GetRequiredDependencyIds(HashSet<string> enabledIds, Dictionary<string, InstalledMod> modMap)
+    {
+        HashSet<string> required = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string enabledId in enabledIds)
+        {
+            if (!modMap.TryGetValue(enabledId, out InstalledMod? mod))
+            {
+                continue;
+            }
+
+            foreach (string dependency in mod.Dependencies)
+            {
+                if (modMap.ContainsKey(dependency))
+                {
+                    required.Add(dependency);
+                }
+            }
+        }
+
+        return required;
+    }
+
+    private static HashSet<string> GetMissingDependencies(HashSet<string> enabledIds, Dictionary<string, InstalledMod> modMap)
+    {
+        HashSet<string> missing = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string enabledId in enabledIds)
+        {
+            if (!modMap.TryGetValue(enabledId, out InstalledMod? mod))
+            {
+                continue;
+            }
+
+            foreach (string dependency in mod.Dependencies)
+            {
+                if (!modMap.ContainsKey(dependency))
+                {
+                    missing.Add(dependency);
+                }
+            }
+        }
+
+        return missing;
+    }
+
+    private void ShowDependencyGraph()
+    {
+        using DependencyGraphForm form = new(_state.AvailableMods);
+        form.ShowDialog(this);
+    }
+
+    private void SetAllChecked(bool isChecked)
+    {
+        if (_modListView.Items.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<string> selectedIds = isChecked
+            ? _state.AvailableMods.Select(mod => mod.Id).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new(StringComparer.OrdinalIgnoreCase);
+        ApplyResolvedSelection(selectedIds, statusMessage: isChecked ? "已全选并补齐依赖。" : "已取消未被依赖的模组。");
     }
 
     private bool SaveSelection(bool showMessage)
@@ -396,7 +729,8 @@ internal sealed class MainForm : Form
                 root.ToJsonString(JsonOptions.Indented),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-            _state = _state.WithUpdatedMods(GetCurrentSelections());
+            _state = _state.WithUpdatedMods(currentSelections);
+            RefreshDependencyPresentation();
             SetStatus($"已保存到 {selectedCandidate.SettingsPath}");
             if (showMessage)
             {
@@ -415,16 +749,18 @@ internal sealed class MainForm : Form
 
     private List<InstalledMod> GetCurrentSelections()
     {
-        List<InstalledMod> mods = new();
+        Dictionary<string, bool> enabledMap = new(StringComparer.OrdinalIgnoreCase);
         foreach (ListViewItem item in _modListView.Items)
         {
             if (item.Tag is InstalledMod mod)
             {
-                mods.Add(mod with { IsEnabled = item.Checked });
+                enabledMap[mod.Id] = item.Checked;
             }
         }
 
-        return mods;
+        return _state.AvailableMods
+            .Select(mod => mod with { IsEnabled = enabledMap.TryGetValue(mod.Id, out bool isEnabled) && isEnabled })
+            .ToList();
     }
 
     private async Task LaunchWorkflowAsync(bool saveBeforeLaunch)
@@ -601,10 +937,13 @@ internal sealed class MainForm : Form
         _deleteAccountButton.Enabled = !isBusy;
         _selectAllButton.Enabled = !isBusy;
         _selectNoneButton.Enabled = !isBusy;
+        _toggleFavoriteButton.Enabled = !isBusy;
+        _showDependencyGraphButton.Enabled = !isBusy;
         _saveButton.Enabled = !isBusy;
         _launchButton.Enabled = !isBusy;
         _saveAndLaunchButton.Enabled = !isBusy;
         _accountComboBox.Enabled = !isBusy;
+        _favoritesFirstCheckBox.Enabled = !isBusy;
         _updateBeforeLaunchCheckBox.Enabled = !isBusy;
         _modListView.Enabled = !isBusy;
         _pushRemoteButton.Enabled = !isBusy && _canPushRemote;
@@ -663,11 +1002,118 @@ internal sealed class MainForm : Form
     }
 }
 
+internal sealed class DependencyGraphForm : Form
+{
+    public DependencyGraphForm(IReadOnlyList<InstalledMod> mods)
+    {
+        Text = "模组依赖关系图";
+        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = new Size(760, 520);
+        Size = new Size(920, 640);
+
+        SplitContainer split = new()
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterDistance = 360,
+        };
+        Controls.Add(split);
+
+        TreeView tree = new()
+        {
+            Dock = DockStyle.Fill,
+            HideSelection = false,
+        };
+        split.Panel1.Controls.Add(tree);
+
+        TextBox detailBox = new()
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            Font = new Font("Consolas", 10f),
+        };
+        split.Panel2.Controls.Add(detailBox);
+
+        Dictionary<string, InstalledMod> modMap = mods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (InstalledMod mod in mods.OrderBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            TreeNode node = BuildNode(mod, modMap, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            tree.Nodes.Add(node);
+        }
+
+        tree.AfterSelect += (_, e) =>
+        {
+            if (e.Node?.Tag is InstalledMod mod)
+            {
+                string dependencies = mod.Dependencies.Count == 0 ? "-" : string.Join(", ", mod.Dependencies);
+                List<string> dependents = mods
+                    .Where(candidate => candidate.Dependencies.Contains(mod.Id, StringComparer.OrdinalIgnoreCase))
+                    .Select(candidate => candidate.Id)
+                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                detailBox.Text = string.Join(Environment.NewLine, new[]
+                {
+                    $"Name: {mod.Name}",
+                    $"ID: {mod.Id}",
+                    $"Author: {mod.Author}",
+                    $"Dependencies: {dependencies}",
+                    $"Dependents: {(dependents.Count == 0 ? "-" : string.Join(", ", dependents))}",
+                    $"Manifest: {mod.ManifestPath}",
+                });
+            }
+        };
+
+        if (tree.Nodes.Count > 0)
+        {
+            tree.SelectedNode = tree.Nodes[0];
+            tree.Nodes[0].Expand();
+        }
+    }
+
+    private static TreeNode BuildNode(InstalledMod mod, Dictionary<string, InstalledMod> modMap, HashSet<string> path)
+    {
+        TreeNode node = new($"{mod.Name} ({mod.Id})")
+        {
+            Tag = mod,
+        };
+
+        if (!path.Add(mod.Id))
+        {
+            node.Nodes.Add(new TreeNode("[循环依赖]"));
+            return node;
+        }
+
+        if (mod.Dependencies.Count == 0)
+        {
+            node.Nodes.Add(new TreeNode("[无依赖]"));
+        }
+        else
+        {
+            foreach (string dependency in mod.Dependencies.OrderBy(id => id, StringComparer.OrdinalIgnoreCase))
+            {
+                if (modMap.TryGetValue(dependency, out InstalledMod? dependencyMod))
+                {
+                    node.Nodes.Add(BuildNode(dependencyMod, modMap, new HashSet<string>(path, StringComparer.OrdinalIgnoreCase)));
+                }
+                else
+                {
+                    node.Nodes.Add(new TreeNode($"[缺失] {dependency}"));
+                }
+            }
+        }
+
+        return node;
+    }
+}
+
 internal sealed record LauncherState(
     string GameDirectory,
     string GameExePath,
     string ModsDirectory,
     string RemoteUrl,
+    LauncherPreferences Preferences,
     List<SettingsCandidate> SettingsCandidates,
     int SelectedCandidateIndex,
     List<InstalledMod> AvailableMods)
@@ -677,6 +1123,7 @@ internal sealed record LauncherState(
         GameExePath: "",
         ModsDirectory: "",
         RemoteUrl: "",
+        Preferences: LauncherPreferences.Empty,
         SettingsCandidates: new List<SettingsCandidate>(),
         SelectedCandidateIndex: -1,
         AvailableMods: new List<InstalledMod>());
@@ -692,13 +1139,14 @@ internal sealed record LauncherState(
         string gameDir = config.ResolveGameDirectory();
         string gameExe = Path.Combine(gameDir, "SlayTheSpire2.exe");
         string modsDir = Path.Combine(gameDir, "mods");
+        LauncherPreferences preferences = LauncherPreferences.Load(gameDir);
 
         List<SettingsCandidate> candidates = SettingsCandidate.Discover();
         int selectedIndex = SettingsCandidate.PickDefaultIndex(candidates);
         SettingsCandidate? selectedCandidate = selectedIndex >= 0 && selectedIndex < candidates.Count ? candidates[selectedIndex] : null;
-        List<InstalledMod> mods = InstalledMod.Discover(modsDir, selectedCandidate);
+        List<InstalledMod> mods = InstalledMod.Discover(modsDir, selectedCandidate, preferences);
 
-        return new LauncherState(gameDir, gameExe, modsDir, config.ModUpdateRemoteUrl, candidates, selectedIndex, mods);
+        return new LauncherState(gameDir, gameExe, modsDir, config.ModUpdateRemoteUrl, preferences, candidates, selectedIndex, mods);
     }
 
     public LauncherState WithSelectedCandidate(string settingsPath)
@@ -706,7 +1154,7 @@ internal sealed record LauncherState(
         int selectedIndex = SettingsCandidates.FindIndex(item =>
             string.Equals(item.SettingsPath, settingsPath, StringComparison.OrdinalIgnoreCase));
         SettingsCandidate? selectedCandidate = selectedIndex >= 0 && selectedIndex < SettingsCandidates.Count ? SettingsCandidates[selectedIndex] : null;
-        List<InstalledMod> mods = InstalledMod.Discover(ModsDirectory, selectedCandidate);
+        List<InstalledMod> mods = InstalledMod.Discover(ModsDirectory, selectedCandidate, Preferences);
         return this with
         {
             SelectedCandidateIndex = selectedIndex,
@@ -716,6 +1164,23 @@ internal sealed record LauncherState(
 
     public LauncherState WithUpdatedMods(List<InstalledMod> mods)
     {
+        return this with
+        {
+            AvailableMods = mods,
+        };
+    }
+
+    public LauncherState WithPreferences(LauncherPreferences preferences)
+    {
+        return this with
+        {
+            Preferences = preferences,
+        };
+    }
+
+    public LauncherState ReloadMods()
+    {
+        List<InstalledMod> mods = InstalledMod.Discover(ModsDirectory, SelectedCandidate, Preferences);
         return this with
         {
             AvailableMods = mods,
@@ -745,9 +1210,11 @@ internal sealed record InstalledMod(
     string Name,
     string Author,
     string ManifestPath,
+    List<string> Dependencies,
+    bool IsFavorite,
     bool IsEnabled)
 {
-    public static List<InstalledMod> Discover(string modsDirectory, SettingsCandidate? candidate)
+    public static List<InstalledMod> Discover(string modsDirectory, SettingsCandidate? candidate, LauncherPreferences preferences)
     {
         ModSelectionState selectionState = candidate?.LoadModSelectionState() ?? ModSelectionState.Default;
         Dictionary<string, bool> enabledMap = selectionState.EnabledMap;
@@ -778,8 +1245,22 @@ internal sealed record InstalledMod(
 
                 string name = manifest["name"]?.GetValue<string>() ?? id;
                 string author = manifest["author"]?.GetValue<string>() ?? "";
+                List<string> dependencies = (manifest["dependencies"] as JsonArray)?
+                    .Select(node => node?.GetValue<string>())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Cast<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                    ?? new List<string>();
                 bool isEnabled = enabledMap.TryGetValue(id, out bool value) ? value : selectionState.DefaultEnabled;
-                mods.Add(new InstalledMod(id, name, author, manifestPath, isEnabled));
+                mods.Add(new InstalledMod(
+                    id,
+                    name,
+                    author,
+                    manifestPath,
+                    dependencies,
+                    preferences.FavoriteModIds.Contains(id),
+                    isEnabled));
             }
             catch
             {
@@ -895,6 +1376,76 @@ internal sealed record ModSelectionState(
 {
     public static ModSelectionState Default { get; } =
         new(new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), true);
+}
+
+internal sealed record LauncherPreferences(
+    HashSet<string> FavoriteModIds,
+    bool FavoritesFirst)
+{
+    public static LauncherPreferences Empty { get; } = new(new HashSet<string>(StringComparer.OrdinalIgnoreCase), true);
+
+    public static LauncherPreferences Load(string gameDirectory)
+    {
+        string path = GetPreferencesPath(gameDirectory);
+        if (!File.Exists(path))
+        {
+            return Empty;
+        }
+
+        try
+        {
+            string json = File.ReadAllText(path, Encoding.UTF8);
+            JsonNode? node = JsonNode.Parse(json);
+            HashSet<string> favorites = (node?["favorite_mod_ids"] as JsonArray)?
+                .Select(entry => entry?.GetValue<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Cast<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool favoritesFirst = node?["favorites_first"]?.GetValue<bool>() ?? true;
+            return new LauncherPreferences(favorites, favoritesFirst);
+        }
+        catch
+        {
+            return Empty;
+        }
+    }
+
+    public LauncherPreferences ToggleFavorite(string modId)
+    {
+        HashSet<string> favorites = new(FavoriteModIds, StringComparer.OrdinalIgnoreCase);
+        if (!favorites.Add(modId))
+        {
+            favorites.Remove(modId);
+        }
+
+        return this with
+        {
+            FavoriteModIds = favorites,
+        };
+    }
+
+    public void Save(string gameDirectory)
+    {
+        string path = GetPreferencesPath(gameDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        JsonObject root = new()
+        {
+            ["favorites_first"] = FavoritesFirst,
+            ["favorite_mod_ids"] = new JsonArray(FavoriteModIds
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .Select(id => (JsonNode?)id)
+                .ToArray()),
+        };
+        File.WriteAllText(path, root.ToJsonString(JsonOptions.Indented), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
+
+    private static string GetPreferencesPath(string gameDirectory)
+    {
+        string stableKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(gameDirectory))));
+        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ModTheSpire");
+        return Path.Combine(root, $"launcher-preferences-{stableKey}.json");
+    }
 }
 
 internal sealed class LauncherConfig
