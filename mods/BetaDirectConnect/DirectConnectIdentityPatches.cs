@@ -3,11 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Debug;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Runs;
@@ -88,6 +91,39 @@ public static class DirectConnectIdentityPatches
         }
     }
 
+    [HarmonyPatch(typeof(JoinFlow), "HandleInitialGameInfoMessage")]
+    private static class JoinFlowHandleInitialGameInfoMessagePatch
+    {
+        private static void Postfix(JoinFlow __instance, InitialGameInfoMessage message)
+        {
+            if (__instance.NetService?.Platform != PlatformType.None)
+            {
+                return;
+            }
+
+            MainFile.Logger.Info(
+                "[JoinDiag][ClientReceivedInitialGameInfo] " +
+                $"remoteVersion={message.version} remoteHash={message.idDatabaseHash} remoteMods={FormatMods(message.mods)} " +
+                $"remoteFailure={message.connectionFailureReason?.ToString() ?? "<none>"} remoteState={message.sessionState} remoteGameMode={message.gameMode} " +
+                $"localVersion={GetLocalVersion()} localHash={ModelIdSerializationCache.Hash} localMods={FormatMods(ModManager.GetGameplayRelevantModNameList())} " +
+                $"localClientId={BetaDirectConnectConfigService.EffectiveClientId} localNetId={SafeGetNetId(__instance.NetService)}");
+        }
+    }
+
+    [HarmonyPatch(typeof(StartRunLobby), "OnConnectedToClientAsHost")]
+    private static class StartRunLobbyOnConnectedToClientAsHostPatch
+    {
+        private static void Prefix(StartRunLobby __instance, ulong playerId)
+        {
+            if (__instance.NetService.Platform != PlatformType.None || __instance.NetService.Type != NetGameType.Host)
+            {
+                return;
+            }
+
+            LogHostInitialGameInfo("StartRunLobby.OnConnectedToClientAsHost", __instance.NetService, playerId);
+        }
+    }
+
     [HarmonyPatch(typeof(JoinFlow), "AttemptLoadJoin")]
     private static class JoinFlowAttemptLoadJoinPatch
     {
@@ -146,6 +182,8 @@ public static class DirectConnectIdentityPatches
     {
         await DirectConnectIdentityService.EnsureClientIdentityAssigned(gameService);
 
+        LogClientJoinAttempt("AttemptJoin", gameService);
+
         TaskCompletionSource<ClientLobbyJoinResponseMessage> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         JoinCompletionRef(joinFlow) = completion;
 
@@ -164,6 +202,8 @@ public static class DirectConnectIdentityPatches
     {
         await DirectConnectIdentityService.EnsureClientIdentityAssigned(gameService);
 
+        LogClientJoinAttempt("AttemptLoadJoin", gameService);
+
         TaskCompletionSource<ClientLoadJoinResponseMessage> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         LoadJoinCompletionRef(joinFlow) = completion;
         gameService.SendMessage(default(ClientLoadJoinRequestMessage));
@@ -174,9 +214,64 @@ public static class DirectConnectIdentityPatches
     {
         await DirectConnectIdentityService.EnsureClientIdentityAssigned(gameService);
 
+        LogClientJoinAttempt("AttemptRejoin", gameService);
+
         TaskCompletionSource<ClientRejoinResponseMessage> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         RejoinCompletionRef(joinFlow) = completion;
         gameService.SendMessage(default(ClientRejoinRequestMessage));
         return await completion.Task;
+    }
+
+    private static void LogClientJoinAttempt(string phase, NetClientGameService gameService)
+    {
+        MainFile.Logger.Info(
+            "[JoinDiag][ClientAttempt] " +
+            $"phase={phase} localVersion={GetLocalVersion()} localHash={ModelIdSerializationCache.Hash} " +
+            $"localMods={FormatMods(ModManager.GetGameplayRelevantModNameList())} " +
+            $"clientId={BetaDirectConnectConfigService.EffectiveClientId} netId={SafeGetNetId(gameService)} " +
+            $"displayId={BetaDirectConnectConfigService.NormalizeDisplayId(BetaDirectConnectConfigService.Current.DisplayId)} " +
+            $"requestedNetId={DirectConnectIdentityService.GetEffectiveHostNetId()} configuredOverride={BetaDirectConnectConfigService.Current.NetIdOverride?.ToString() ?? "<none>"}");
+    }
+
+    private static void LogHostInitialGameInfo(string phase, INetGameService netService, ulong peerId)
+    {
+        List<string>? mods = ModManager.GetGameplayRelevantModNameList();
+        MainFile.Logger.Info(
+            "[JoinDiag][HostInitialGameInfo] " +
+            $"phase={phase} peerId={peerId} hostVersion={GetLocalVersion()} hostHash={ModelIdSerializationCache.Hash} " +
+            $"hostMods={FormatMods(mods)} hostNetId={SafeGetNetId(netService)}");
+    }
+
+    private static string GetLocalVersion()
+    {
+        return ReleaseInfoManager.Instance.ReleaseInfo?.Version ?? GitHelper.ShortCommitId ?? "UNKNOWN";
+    }
+
+    private static string FormatMods(IEnumerable<string>? mods)
+    {
+        if (mods == null)
+        {
+            return "<null>";
+        }
+
+        List<string> materialized = mods.ToList();
+        return materialized.Count == 0 ? "<empty>" : "[" + string.Join(", ", materialized.OrderBy(mod => mod, StringComparer.Ordinal)) + "]";
+    }
+
+    private static ulong SafeGetNetId(INetGameService? netService)
+    {
+        if (netService == null || !netService.IsConnected)
+        {
+            return 0UL;
+        }
+
+        try
+        {
+            return netService.NetId;
+        }
+        catch
+        {
+            return 0UL;
+        }
     }
 }

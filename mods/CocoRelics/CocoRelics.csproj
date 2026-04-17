@@ -125,11 +125,6 @@
         <Message Text="Copying .dll and manifest to mods folder." Importance="high" />
         <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" />
         <Copy SourceFiles="CocoRelics.json" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" />
-        <Message Text="Copying BaseLib to mods folder." Importance="high" />
-        <ItemGroup>
-            <BaseLibFiles Include="$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/lib/net9.0/BaseLib.dll;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.pck;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.json;"/>
-        </ItemGroup>
-        <Copy SourceFiles="@(BaseLibFiles)" DestinationFolder="$(ModsPath)BaseLib/" />
     </Target>
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">

@@ -140,11 +140,6 @@
         <Copy
             SourceFiles="@(AiEventProjectFiles)"
             DestinationFiles="@(AiEventProjectFiles->'$(ModsPath)$(MSBuildProjectName)\%(RecursiveDir)%(Filename)%(Extension)')" />
-        <Message Text="Copying BaseLib to mods folder." Importance="high" />
-        <ItemGroup>
-            <BaseLibFiles Include="$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/lib/net9.0/BaseLib.dll;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.pck;$(NuGetPackageRoot)/alchyr.sts2.baselib/0.2.0/Content/BaseLib.json;" />
-        </ItemGroup>
-        <Copy SourceFiles="@(BaseLibFiles)" DestinationFolder="$(ModsPath)BaseLib/" />
     </Target>
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">

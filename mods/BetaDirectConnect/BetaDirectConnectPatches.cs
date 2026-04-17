@@ -1999,6 +1999,10 @@ public static class BetaDirectConnectPatches
         logger.Info($"Client {transportPeerId} connected in direct-connect loaded lobby. Waiting for logical netId assignment before save membership validation.");
 
         InitialGameInfoMessage message = InitialGameInfoMessage.Basic();
+        MainFile.Logger.Info(
+            "[JoinDiag][HostInitialGameInfo] " +
+            $"phase=LoadRunLobby.OnConnectedToClientAsHost peerId={transportPeerId} hostVersion={message.version} hostHash={message.idDatabaseHash} " +
+            $"hostMods={DescribeModList(message.mods)} hostNetId={SafeGetNetId(lobby.NetService)}");
         message.sessionState = RunSessionState.InLoadedLobby;
         message.gameMode = lobby.GameMode;
 
@@ -2353,6 +2357,17 @@ public static class BetaDirectConnectPatches
     private static string DescribeLobbyPlayers(System.Collections.Generic.IEnumerable<LobbyPlayer> players)
     {
         return string.Join(", ", players.Select(player => $"{player.id}:{player.character.Id.Entry}:slot{player.slotId}:ready={player.isReady}"));
+    }
+
+    private static string DescribeModList(IEnumerable<string>? mods)
+    {
+        if (mods == null)
+        {
+            return "<null>";
+        }
+
+        List<string> materialized = mods.ToList();
+        return materialized.Count == 0 ? "<empty>" : "[" + string.Join(", ", materialized.OrderBy(mod => mod, StringComparer.Ordinal)) + "]";
     }
 
     private static ulong SafeGetNetId(INetGameService? netService)
