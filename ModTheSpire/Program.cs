@@ -1118,31 +1118,38 @@ internal sealed class MainForm : Form
 
     private async Task<bool> UpdateModsAsync(bool showPopupWhenFinished)
     {
+        using UpdateLogForm logForm = new();
+        Progress<string> progress = new(message => logForm.AppendLog(message));
+
         try
         {
             SetBusyState(true);
             SetStatus("正在更新 Mod...");
+            logForm.Show(this);
+            logForm.AppendLog($"[{DateTime.Now:HH:mm:ss}] 开始更新 Mod...");
 
-            UpdateModsResult result = await Task.Run(() => GitModUpdater.Run(_state.GameDirectory, _state.RemoteUrl));
+            UpdateModsResult result = await Task.Run(() => GitModUpdater.Run(_state.GameDirectory, _state.RemoteUrl, progress));
+            logForm.MarkCompleted(result.Success, result.Success ? "更新完成。" : "更新失败。");
 
             if (result.Success)
             {
                 SetStatus("Mod 更新完成。");
                 ReloadState();
+                if (!showPopupWhenFinished)
+                {
+                    logForm.Close();
+                }
                 return true;
             }
 
             SetStatus($"更新失败: {result.Message}", isError: true);
-            if (showPopupWhenFinished)
-            {
-                MessageBox.Show(this, result.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
             return false;
         }
         catch (Exception ex)
         {
+            logForm.AppendLog(ex.ToString());
+            logForm.MarkCompleted(success: false, summary: "更新失败。");
             SetStatus($"更新失败: {ex.Message}", isError: true);
-            MessageBox.Show(this, ex.ToString(), "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
         finally
@@ -1222,6 +1229,96 @@ internal sealed class MainForm : Form
         {
             SetBusyState(false);
         }
+    }
+}
+
+internal sealed class UpdateLogForm : Form
+{
+    private readonly TextBox _logTextBox;
+    private readonly Label _summaryLabel;
+    private readonly Button _closeButton;
+
+    public UpdateLogForm()
+    {
+        Text = "正在更新 Mod";
+        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = new Size(760, 460);
+        Size = new Size(920, 620);
+
+        TableLayoutPanel root = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(12),
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Controls.Add(root);
+
+        _summaryLabel = new Label
+        {
+            AutoSize = true,
+            Text = "正在执行 git 更新，请稍候...",
+        };
+        root.Controls.Add(_summaryLabel, 0, 0);
+
+        _logTextBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Font = new Font("Consolas", 10f),
+        };
+        root.Controls.Add(_logTextBox, 0, 1);
+
+        FlowLayoutPanel buttons = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+        };
+        root.Controls.Add(buttons, 0, 2);
+
+        _closeButton = new Button
+        {
+            AutoSize = true,
+            Text = "关闭",
+            Enabled = false,
+        };
+        _closeButton.Click += (_, _) => Close();
+        buttons.Controls.Add(_closeButton);
+
+        FormClosing += (_, e) =>
+        {
+            if (!_closeButton.Enabled)
+            {
+                e.Cancel = true;
+            }
+        };
+    }
+
+    public void AppendLog(string message)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            _logTextBox.AppendText(Environment.NewLine);
+            return;
+        }
+
+        _logTextBox.AppendText(message + Environment.NewLine);
+    }
+
+    public void MarkCompleted(bool success, string summary)
+    {
+        Text = success ? "Mod 更新完成" : "Mod 更新失败";
+        _summaryLabel.Text = summary;
+        _summaryLabel.ForeColor = success ? Color.DarkGreen : Color.Firebrick;
+        _closeButton.Enabled = true;
     }
 }
 
@@ -1746,7 +1843,7 @@ internal static class GitModUpdater
 {
     private static readonly string[] ManagedPathSpecs = ["mods", ".gitignore"];
 
-    public static UpdateModsResult Run(string gameDirectory, string remoteUrl)
+    public static UpdateModsResult Run(string gameDirectory, string remoteUrl, IProgress<string>? progress = null)
     {
         if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
         {
@@ -1760,33 +1857,40 @@ internal static class GitModUpdater
 
         StringBuilder log = new();
         bool hasGitDirectory = Directory.Exists(Path.Combine(gameDirectory, ".git"));
-        if (!hasGitDirectory || !TryRunGit(gameDirectory, log, "rev-parse", "--is-inside-work-tree"))
+        if (!hasGitDirectory || !TryRunGit(gameDirectory, log, progress, "rev-parse", "--is-inside-work-tree"))
         {
-            RunGit(gameDirectory, log, "init");
+            RunGit(gameDirectory, log, progress, "init");
         }
 
-        ConfigureSparseCheckout(gameDirectory, log);
+        ConfigureSparseCheckout(gameDirectory, log, progress);
 
         string currentRemote = TryGetGitOutput(gameDirectory, "remote", "get-url", "origin");
         if (string.IsNullOrWhiteSpace(currentRemote))
         {
-            RunGit(gameDirectory, log, "remote", "add", "origin", remoteUrl);
+            RunGit(gameDirectory, log, progress, "remote", "add", "origin", remoteUrl);
         }
         else if (!string.Equals(currentRemote.Trim(), remoteUrl, StringComparison.OrdinalIgnoreCase))
         {
-            RunGit(gameDirectory, log, "remote", "set-url", "origin", remoteUrl);
+            RunGit(gameDirectory, log, progress, "remote", "set-url", "origin", remoteUrl);
         }
 
-        RunGit(gameDirectory, log, "fetch", "origin", "--prune");
+        RunGit(gameDirectory, log, progress, "fetch", "origin", "--prune");
 
-        bool resetMain = TryRunGit(gameDirectory, log, "reset", "--hard", "origin/main");
-        if (!resetMain)
+        List<string> branchCandidates = GetRemoteBranchCandidates(gameDirectory).ToList();
+        bool resetSucceeded = false;
+        foreach (string branch in branchCandidates)
         {
-            bool resetMaster = TryRunGit(gameDirectory, log, "reset", "--hard", "origin/master");
-            if (!resetMaster)
+            if (TryRunGit(gameDirectory, log, progress, "reset", "--hard", $"origin/{branch}"))
             {
-                return UpdateModsResult.Fail("无法重置到 origin/main 或 origin/master。\n\n" + log);
+                progress?.Report($"[info] 已重置到 origin/{branch}");
+                resetSucceeded = true;
+                break;
             }
+        }
+
+        if (!resetSucceeded)
+        {
+            return UpdateModsResult.Fail("无法重置到远端可用分支。\n\n" + log);
         }
 
         return UpdateModsResult.Ok("Mod 更新完成。\n\n" + log);
@@ -1815,14 +1919,15 @@ internal static class GitModUpdater
         }
     }
 
-    private static void ConfigureSparseCheckout(string gameDirectory, StringBuilder log)
+    private static void ConfigureSparseCheckout(string gameDirectory, StringBuilder log, IProgress<string>? progress)
     {
-        TryRunGit(gameDirectory, log, "config", "core.sparseCheckout", "true");
+        TryRunGit(gameDirectory, log, progress, "config", "core.sparseCheckout", "true");
         string infoDir = Path.Combine(gameDirectory, ".git", "info");
         Directory.CreateDirectory(infoDir);
         string sparseCheckoutPath = Path.Combine(infoDir, "sparse-checkout");
         string sparseContents = string.Join(Environment.NewLine, ManagedPathSpecs.Select(ToSparseCheckoutPattern)) + Environment.NewLine;
         File.WriteAllText(sparseCheckoutPath, sparseContents, Encoding.UTF8);
+        progress?.Report($"[file] 写入 sparse-checkout: {sparseCheckoutPath}");
     }
 
     private static string ToSparseCheckoutPattern(string pathSpec)
@@ -1835,11 +1940,11 @@ internal static class GitModUpdater
         return "/" + pathSpec.Trim('/').Replace('\\', '/') + "/";
     }
 
-    private static bool TryRunGit(string workdir, StringBuilder log, params string[] args)
+    private static bool TryRunGit(string workdir, StringBuilder log, IProgress<string>? progress, params string[] args)
     {
         try
         {
-            RunGit(workdir, log, args);
+            RunGit(workdir, log, progress, args);
             return true;
         }
         catch
@@ -1848,7 +1953,7 @@ internal static class GitModUpdater
         }
     }
 
-    private static void RunGit(string workdir, StringBuilder log, params string[] args)
+    private static void RunGit(string workdir, StringBuilder log, IProgress<string>? progress, params string[] args)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -1869,24 +1974,43 @@ internal static class GitModUpdater
 
         using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("无法启动 git 进程。");
-        string stdout = process.StandardOutput.ReadToEnd();
-        string stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
 
-        log.AppendLine($"> git {string.Join(" ", args)}");
-        if (!string.IsNullOrWhiteSpace(stdout))
+        void AppendLine(string line)
         {
-            log.AppendLine(stdout.Trim());
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                return;
+            }
+
+            log.AppendLine(line);
+            progress?.Report(line);
         }
-        if (!string.IsNullOrWhiteSpace(stderr))
+
+        AppendLine($"> git {string.Join(" ", args)}");
+        process.OutputDataReceived += (_, e) =>
         {
-            log.AppendLine(stderr.Trim());
-        }
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                AppendLine(e.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                AppendLine(e.Data);
+            }
+        };
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        process.WaitForExit();
         log.AppendLine();
+        progress?.Report(string.Empty);
 
         if (process.ExitCode != 0)
         {
-            string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            string detail = log.ToString();
             detail = string.IsNullOrWhiteSpace(detail) ? $"退出码 {process.ExitCode}" : detail.Trim();
             throw new InvalidOperationException($"git {string.Join(" ", args)} 执行失败: {detail}");
         }
@@ -1897,7 +2021,7 @@ internal static class GitModUpdater
         try
         {
             StringBuilder log = new();
-            RunGit(workdir, log, args);
+            RunGit(workdir, log, progress: null, args);
             string text = log.ToString();
             string marker = Environment.NewLine;
             int index = text.IndexOf(marker, StringComparison.Ordinal);
@@ -1914,6 +2038,36 @@ internal static class GitModUpdater
         {
             return string.Empty;
         }
+    }
+
+    private static IEnumerable<string> GetRemoteBranchCandidates(string workdir)
+    {
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidate(string? branchName)
+        {
+            if (!string.IsNullOrWhiteSpace(branchName))
+            {
+                seen.Add(branchName.Trim());
+            }
+        }
+
+        string upstream = TryGetGitOutput(workdir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}");
+        if (!string.IsNullOrWhiteSpace(upstream) && upstream.StartsWith("origin/", StringComparison.OrdinalIgnoreCase))
+        {
+            AddCandidate(upstream["origin/".Length..]);
+        }
+
+        string remoteHead = TryGetGitOutput(workdir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
+        if (!string.IsNullOrWhiteSpace(remoteHead) && remoteHead.StartsWith("origin/", StringComparison.OrdinalIgnoreCase))
+        {
+            AddCandidate(remoteHead["origin/".Length..]);
+        }
+
+        AddCandidate(TryGetGitOutput(workdir, "branch", "--show-current"));
+        AddCandidate("main");
+        AddCandidate("master");
+        return seen;
     }
 }
 
@@ -1948,11 +2102,7 @@ internal static class GitRemotePublisher
             return PublishRemoteResult.Fail("未在 PATH 中找到 git，无法推送。");
         }
 
-        string branch = TryGetGitValue(gameDirectory, "branch", "--show-current");
-        if (string.IsNullOrWhiteSpace(branch))
-        {
-            branch = "main";
-        }
+        string branch = ResolvePublishBranch(gameDirectory);
 
         string status = TryGetGitValue(gameDirectory, "status", "--porcelain", "--", "mods", ".gitignore");
         bool hasChanges = !string.IsNullOrWhiteSpace(status);
@@ -1971,6 +2121,29 @@ internal static class GitRemotePublisher
             ? $"已提交并推送到远程分支 {branch}。"
             : $"没有本地改动，已尝试同步推送到远程分支 {branch}。";
         return PublishRemoteResult.Ok(message);
+    }
+
+    private static string ResolvePublishBranch(string workdir)
+    {
+        string upstream = TryGetGitValue(workdir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}");
+        if (!string.IsNullOrWhiteSpace(upstream) && upstream.StartsWith("origin/", StringComparison.OrdinalIgnoreCase))
+        {
+            return upstream["origin/".Length..];
+        }
+
+        string currentBranch = TryGetGitValue(workdir, "branch", "--show-current");
+        if (!string.IsNullOrWhiteSpace(currentBranch))
+        {
+            return currentBranch;
+        }
+
+        string remoteHead = TryGetGitValue(workdir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
+        if (!string.IsNullOrWhiteSpace(remoteHead) && remoteHead.StartsWith("origin/", StringComparison.OrdinalIgnoreCase))
+        {
+            return remoteHead["origin/".Length..];
+        }
+
+        return "main";
     }
 
     private static string TryGetGitValue(string workdir, params string[] args)

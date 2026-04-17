@@ -42,6 +42,32 @@ function Get-GitOutput {
     return (($output | Out-String).Trim())
 }
 
+function Resolve-PreferredBranch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory,
+
+        [string]$RemoteName = "origin"
+    )
+
+    $upstream = Get-GitOutput -WorkingDirectory $WorkingDirectory -Arguments @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if (-not [string]::IsNullOrWhiteSpace($upstream) -and $upstream.StartsWith("$RemoteName/")) {
+        return $upstream.Substring($RemoteName.Length + 1)
+    }
+
+    $currentBranch = Get-GitOutput -WorkingDirectory $WorkingDirectory -Arguments @("branch", "--show-current")
+    if (-not [string]::IsNullOrWhiteSpace($currentBranch)) {
+        return $currentBranch
+    }
+
+    $remoteHead = Get-GitOutput -WorkingDirectory $WorkingDirectory -Arguments @("symbolic-ref", "--short", "refs/remotes/$RemoteName/HEAD")
+    if (-not [string]::IsNullOrWhiteSpace($remoteHead) -and $remoteHead.StartsWith("$RemoteName/")) {
+        return $remoteHead.Substring($RemoteName.Length + 1)
+    }
+
+    return "main"
+}
+
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $configPath = Join-Path $repoRoot "config.json"
 
@@ -75,10 +101,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Branch)) {
-    $Branch = Get-GitOutput -WorkingDirectory $GameDirectory -Arguments @("branch", "--show-current")
-    if ([string]::IsNullOrWhiteSpace($Branch)) {
-        $Branch = "main"
-    }
+    $Branch = Resolve-PreferredBranch -WorkingDirectory $GameDirectory -RemoteName $Remote
 }
 
 $status = Get-GitOutput -WorkingDirectory $GameDirectory -Arguments @("status", "--porcelain", "--", "mods", ".gitignore")
