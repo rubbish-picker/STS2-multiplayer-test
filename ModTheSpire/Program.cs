@@ -37,6 +37,8 @@ internal sealed class MainForm : Form
     private readonly Button _deleteAccountButton;
     private readonly Button _selectAllButton;
     private readonly Button _selectNoneButton;
+    private readonly Button _exportCheckedModsButton;
+    private readonly Button _importCheckedModsButton;
     private readonly Button _showDependencyGraphButton;
     private readonly Button _saveButton;
     private readonly Button _launchButton;
@@ -214,6 +216,23 @@ internal sealed class MainForm : Form
         };
         _selectNoneButton.Click += (_, _) => SetAllChecked(false);
         actionBar.Controls.Add(_selectNoneButton);
+
+        _exportCheckedModsButton = new Button
+        {
+            AutoSize = true,
+            Margin = new Padding(12, 3, 3, 3),
+            Text = "导出勾选到剪贴板",
+        };
+        _exportCheckedModsButton.Click += (_, _) => ExportCheckedModsToClipboard();
+        actionBar.Controls.Add(_exportCheckedModsButton);
+
+        _importCheckedModsButton = new Button
+        {
+            AutoSize = true,
+            Text = "从剪贴板导入勾选",
+        };
+        _importCheckedModsButton.Click += (_, _) => ImportCheckedModsFromClipboard();
+        actionBar.Controls.Add(_importCheckedModsButton);
 
         _favoritesFirstCheckBox = new CheckBox
         {
@@ -765,6 +784,115 @@ internal sealed class MainForm : Form
         ApplyResolvedSelection(selectedIds, statusMessage: isChecked ? "已全选并补齐依赖。" : "已取消未被依赖的模组。");
     }
 
+    private void ExportCheckedModsToClipboard()
+    {
+        try
+        {
+            List<string> selectedIds = GetCurrentSelections()
+                .Where(mod => mod.IsEnabled)
+                .Select(mod => mod.Id)
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            JsonObject payload = new()
+            {
+                ["type"] = "modthespire.selection",
+                ["version"] = 1,
+                ["mods"] = new JsonArray(selectedIds.Select(id => JsonValue.Create(id)).ToArray()),
+            };
+
+            Clipboard.SetText(payload.ToJsonString(JsonOptions.Indented));
+            SetStatus($"已导出 {selectedIds.Count} 个已勾选模组到剪贴板。");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"导出失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "导出失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ImportCheckedModsFromClipboard()
+    {
+        try
+        {
+            if (!Clipboard.ContainsText())
+            {
+                throw new InvalidOperationException("剪贴板里没有文本内容。");
+            }
+
+            HashSet<string> importedIds = ParseImportedModIds(Clipboard.GetText());
+            if (importedIds.Count == 0)
+            {
+                throw new InvalidOperationException("没有在剪贴板中解析到任何模组 ID。");
+            }
+
+            Dictionary<string, InstalledMod> modMap = _state.AvailableMods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
+            HashSet<string> matchedIds = new(importedIds.Where(modMap.ContainsKey), StringComparer.OrdinalIgnoreCase);
+            List<string> missingIds = importedIds
+                .Where(id => !modMap.ContainsKey(id))
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            HashSet<string> resolvedIds = ResolveEnabledIdsWithDependencies(matchedIds, modMap);
+            HashSet<string> missingDependencies = GetMissingDependencies(resolvedIds, modMap);
+
+            StringBuilder status = new();
+            status.Append($"已从剪贴板导入 {matchedIds.Count} 个本地存在的模组");
+            if (resolvedIds.Count > matchedIds.Count)
+            {
+                status.Append($"，并自动补齐 {resolvedIds.Count - matchedIds.Count} 个依赖");
+            }
+
+            status.Append('。');
+            if (missingIds.Count > 0)
+            {
+                status.Append($" 本地未找到: {string.Join(", ", missingIds)}。");
+            }
+
+            if (missingDependencies.Count > 0)
+            {
+                status.Append($" 仍缺失依赖: {string.Join(", ", missingDependencies.OrderBy(id => id, StringComparer.OrdinalIgnoreCase))}。");
+            }
+
+            ApplyResolvedSelection(resolvedIds, missingDependencies, status.ToString());
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"导入失败: {ex.Message}", isError: true);
+            MessageBox.Show(this, ex.ToString(), "导入失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static HashSet<string> ParseImportedModIds(string clipboardText)
+    {
+        if (string.IsNullOrWhiteSpace(clipboardText))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        string trimmed = clipboardText.Trim();
+        if (trimmed.StartsWith("{", StringComparison.Ordinal))
+        {
+            JsonNode? rootNode = JsonNode.Parse(trimmed);
+            JsonArray? modsArray = rootNode?["mods"] as JsonArray;
+            if (modsArray != null)
+            {
+                return modsArray
+                    .Select(node => node?.GetValue<string>()?.Trim())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        char[] separators = ['\r', '\n', ',', ';', '\t'];
+        return trimmed
+            .Split(separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(value => value.Trim().Trim('"'))
+            .Where(value => !string.IsNullOrWhiteSpace(value) && !value.StartsWith('#'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     private bool SaveSelection(bool showMessage)
     {
         try
@@ -1031,6 +1159,8 @@ internal sealed class MainForm : Form
         _deleteAccountButton.Enabled = !isBusy;
         _selectAllButton.Enabled = !isBusy;
         _selectNoneButton.Enabled = !isBusy;
+        _exportCheckedModsButton.Enabled = !isBusy;
+        _importCheckedModsButton.Enabled = !isBusy;
         _showDependencyGraphButton.Enabled = !isBusy;
         _saveButton.Enabled = !isBusy;
         _launchButton.Enabled = !isBusy;
