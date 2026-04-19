@@ -2,5 +2,7 @@
   "SPOILS_OF_BATTLE.description": "[gold]铸造[/gold]{Forge:diff()}。\n抽2张牌。",
   "ARSENAL.description": "每当你[gold]生成[/gold]一张牌，都获得{ArsenalPower:diff()}点[gold]力量[/gold]。",
   "CHARGE.description": "选择你[gold]抽牌堆[/gold]中的{Cards:diff()}张牌，将其[gold]变化[/gold]为\n[gold]{IfUpgraded:show:仆从俯冲+|仆从俯冲}[/gold]。",
-  "BEGONE.description": "造成{Damage:diff()}点伤害。\n选择你[gold]手牌[/gold]中的一张牌，将其[gold]变化[/gold]为[gold]{IfUpgraded:show:仆从打击+|仆从打击}[/gold]。"
+  "BEGONE.description": "造成{Damage:diff()}点伤害。\n选择你[gold]手牌[/gold]中的一张牌，将其[gold]变化[/gold]为[gold]{IfUpgraded:show:仆从打击+|仆从打击}[/gold]。",
+  "GUIDING_STAR.description": "造成{Damage:diff()}点伤害。\n抽{Cards:diff()}张牌。",
+  "SWORD_SAGE.description": "[gold]君王之剑[/gold]现在会额外命中一次。"
 }

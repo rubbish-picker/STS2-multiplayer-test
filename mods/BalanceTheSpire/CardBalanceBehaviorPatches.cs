@@ -2,53 +2,31 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
 
 namespace BalanceTheSpire;
 
 [HarmonyPatch]
-internal static class CardBalancePatches
+internal static class CardBalanceBehaviorPatches
 {
-    [HarmonyPatch(typeof(SpoilsOfBattle), MethodType.Constructor)]
-    [HarmonyPostfix]
-    private static void SpoilsOfBattleCtorPostfix(SpoilsOfBattle __instance)
-    {
-        __instance.DynamicVars.Forge.BaseValue = 5m;
-    }
-
-    [HarmonyPatch(typeof(SpoilsOfBattle), "OnUpgrade")]
-    [HarmonyPrefix]
-    private static bool SpoilsOfBattleUpgradePrefix(SpoilsOfBattle __instance)
-    {
-        __instance.DynamicVars.Forge.UpgradeValueBy(3m);
-        return false;
-    }
-
     [HarmonyPatch(typeof(SpoilsOfBattle), "OnPlay")]
     [HarmonyPostfix]
     private static void SpoilsOfBattlePlayPostfix(SpoilsOfBattle __instance, PlayerChoiceContext choiceContext, ref Task __result)
     {
         __result = DrawAfterSpoilsAsync(__result, __instance, choiceContext);
-    }
-
-    [HarmonyPatch(typeof(Arsenal), "OnUpgrade")]
-    [HarmonyPrefix]
-    private static bool ArsenalUpgradePrefix(Arsenal __instance)
-    {
-        if (!__instance.Keywords.Contains(CardKeyword.Innate))
-        {
-            __instance.AddKeyword(CardKeyword.Innate);
-        }
-
-        return false;
     }
 
     [HarmonyPatch(typeof(ArsenalPower), nameof(ArsenalPower.AfterCardPlayed))]
@@ -99,11 +77,21 @@ internal static class CardBalancePatches
         return false;
     }
 
-    [HarmonyPatch(typeof(MinionDiveBomb), MethodType.Constructor)]
-    [HarmonyPostfix]
-    private static void MinionDiveBombCtorPostfix(MinionDiveBomb __instance)
+    [HarmonyPatch(typeof(SwordSagePower), nameof(SwordSagePower.TryModifyEnergyCostInCombat))]
+    [HarmonyPrefix]
+    private static bool SwordSagePowerTryModifyEnergyCostInCombatPrefix(decimal originalCost, ref decimal modifiedCost, ref bool __result)
     {
-        __instance.EnergyCost.SetCustomBaseCost(0);
+        modifiedCost = originalCost;
+        __result = false;
+        return false;
+    }
+
+    [HarmonyPatch(typeof(GuidingStar), "OnPlay")]
+    [HarmonyPrefix]
+    private static bool GuidingStarPlayPrefix(GuidingStar __instance, PlayerChoiceContext choiceContext, CardPlay cardPlay, ref Task __result)
+    {
+        __result = PlayGuidingStarAsync(__instance, choiceContext, cardPlay);
+        return false;
     }
 
     private static async Task DrawAfterSpoilsAsync(Task originalTask, SpoilsOfBattle card, PlayerChoiceContext choiceContext)
@@ -168,12 +156,7 @@ internal static class CardBalancePatches
             filter: null,
             source: card)).FirstOrDefault();
 
-        if (selected == null)
-        {
-            return;
-        }
-
-        if (card.CombatState == null)
+        if (selected == null || card.CombatState == null)
         {
             return;
         }
@@ -185,5 +168,31 @@ internal static class CardBalancePatches
         }
 
         await CardCmd.Transform(selected, replacement);
+    }
+
+    private static async Task PlayGuidingStarAsync(GuidingStar card, PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    {
+        ArgumentNullException.ThrowIfNull(cardPlay.Target, nameof(cardPlay.Target));
+
+        await CreatureCmd.TriggerAnim(card.Owner.Creature, "Cast", card.Owner.Character.CastAnimDelay);
+
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        NCreature? nCreature = combatRoom?.GetCreatureNode(cardPlay.Target);
+        if (nCreature != null && combatRoom != null)
+        {
+            SfxCmd.Play("event:/sfx/characters/regent/regent_guiding_star");
+            NSmallMagicMissileVfx? missile = NSmallMagicMissileVfx.Create(nCreature.GetBottomOfHitbox(), new Color("50b598"));
+            if (missile != null)
+            {
+                combatRoom.CombatVfxContainer.AddChildSafely(missile);
+                await Cmd.Wait(missile.WaitTime);
+            }
+        }
+
+        await DamageCmd.Attack(card.DynamicVars.Damage.BaseValue).WithNoAttackerAnim().FromCard(card)
+            .Targeting(cardPlay.Target)
+            .Execute(choiceContext);
+
+        await CardPileCmd.Draw(choiceContext, card.DynamicVars.Cards.BaseValue, card.Owner);
     }
 }

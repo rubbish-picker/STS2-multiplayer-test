@@ -1,0 +1,11 @@
+{
+  "id": "AgentTestApi",
+  "name": "AgentTestApi",
+  "author": "Codex",
+  "description": "Local automation API for Slay the Spire 2 with in-process input injection.",
+  "version": "v0.1.0",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": [],
+  "affects_gameplay": false
+}

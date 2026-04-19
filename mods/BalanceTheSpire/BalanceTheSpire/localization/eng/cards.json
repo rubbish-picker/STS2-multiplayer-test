@@ -2,5 +2,7 @@
   "SPOILS_OF_BATTLE.description": "[gold]Forge[/gold] {Forge:diff()}.\nDraw 2 cards.",
   "ARSENAL.description": "Whenever you generate a card, gain {ArsenalPower:diff()} [gold]Strength[/gold].",
   "CHARGE.description": "Choose {Cards:diff()} {Cards:plural:card|cards} in your [gold]Draw Pile[/gold] to [gold]Transform[/gold] into\n[gold]{Cards:plural:{IfUpgraded:show:Minion Dive Bomb+|Minion Dive Bomb}[/gold]|{IfUpgraded:show:Minion Dive Bombs+|Minion Dive Bombs}[/gold]}.",
-  "BEGONE.description": "Deal {Damage:diff()} damage.\nChoose a card in your [gold]Hand[/gold] to [gold]Transform[/gold] into [gold]{IfUpgraded:show:Minion Strike+|Minion Strike}[/gold]."
+  "BEGONE.description": "Deal {Damage:diff()} damage.\nChoose a card in your [gold]Hand[/gold] to [gold]Transform[/gold] into [gold]{IfUpgraded:show:Minion Strike+|Minion Strike}[/gold].",
+  "GUIDING_STAR.description": "Deal {Damage:diff()} damage.\nDraw {Cards:diff()} {Cards:plural:card|cards}.",
+  "SWORD_SAGE.description": "[gold]Sovereign Blade[/gold] now hits an additional time."
 }

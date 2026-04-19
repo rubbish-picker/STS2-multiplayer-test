@@ -1,0 +1,4 @@
+{
+  "SWORD_SAGE_POWER.description": "[gold]Sovereign Blade[/gold] now hits [blue]1[/blue] additional time.",
+  "SWORD_SAGE_POWER.smartDescription": "[gold]Sovereign Blade[/gold] now hits [blue]{Amount}[/blue] additional {Amount:plural:time|times}."
+}

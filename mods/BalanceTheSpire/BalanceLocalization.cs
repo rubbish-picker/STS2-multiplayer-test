@@ -9,6 +9,8 @@ namespace BalanceTheSpire;
 
 public static class BalanceLocalization
 {
+    private static readonly string[] TableNames = ["cards", "powers"];
+
     public static void ApplyCurrentLanguage()
     {
         try
@@ -18,13 +20,10 @@ public static class BalanceLocalization
                 return;
             }
 
-            Dictionary<string, string> activeTable = LoadTableForLanguage(LocManager.Instance.Language);
-            if (activeTable.Count > 0)
+            foreach (string tableName in TableNames)
             {
-                LocManager.Instance.GetTable("cards").MergeWith(activeTable);
+                ApplyTable(tableName, LocManager.Instance.Language);
             }
-
-            MergeEnglishFallbacks(LoadTableForLanguage("eng"));
         }
         catch (Exception ex)
         {
@@ -43,14 +42,25 @@ public static class BalanceLocalization
         ApplyCurrentLanguage();
     }
 
-    private static Dictionary<string, string> LoadTableForLanguage(string? language)
+    private static void ApplyTable(string tableName, string? language)
+    {
+        Dictionary<string, string> activeTable = LoadTableForLanguage(tableName, language);
+        if (activeTable.Count > 0)
+        {
+            LocManager.Instance!.GetTable(tableName).MergeWith(activeTable);
+        }
+
+        MergeEnglishFallbacks(tableName, LoadTableForLanguage(tableName, "eng"));
+    }
+
+    private static Dictionary<string, string> LoadTableForLanguage(string tableName, string? language)
     {
         string path = Path.Combine(
             GetModDirectory(),
             MainFile.ModId,
             "localization",
             NormalizeLanguage(language),
-            "cards.json");
+            $"{tableName}.json");
 
         if (!File.Exists(path))
         {
@@ -62,7 +72,7 @@ public static class BalanceLocalization
                ?? new Dictionary<string, string>(StringComparer.Ordinal);
     }
 
-    private static void MergeEnglishFallbacks(Dictionary<string, string> englishTable)
+    private static void MergeEnglishFallbacks(string tableName, Dictionary<string, string> englishTable)
     {
         FieldInfo? field = typeof(LocManager).GetField("_engTables", BindingFlags.Instance | BindingFlags.NonPublic);
         if (field?.GetValue(LocManager.Instance) is not Dictionary<string, LocTable> engTables)
@@ -70,7 +80,7 @@ public static class BalanceLocalization
             return;
         }
 
-        if (engTables.TryGetValue("cards", out LocTable? table))
+        if (engTables.TryGetValue(tableName, out LocTable? table))
         {
             table.MergeWith(englishTable);
         }

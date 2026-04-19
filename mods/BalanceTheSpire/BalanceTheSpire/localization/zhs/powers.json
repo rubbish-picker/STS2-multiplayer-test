@@ -1,0 +1,4 @@
+{
+  "SWORD_SAGE_POWER.description": "[gold]君王之剑[/gold]现在额外命中[blue]1[/blue]次。",
+  "SWORD_SAGE_POWER.smartDescription": "[gold]君王之剑[/gold]现在额外命中[blue]{Amount}[/blue]次。"
+}
