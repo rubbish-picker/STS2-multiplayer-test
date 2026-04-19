@@ -1,0 +1,11 @@
+{
+  "id": "BalanceTheSpire",
+  "name": "BalanceTheSpire",
+  "author": "Codex",
+  "description": "Vanilla card balance adjustments for Slay the Spire 2.",
+  "version": "v0.1.0",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": ["BaseLib"],
+  "affects_gameplay": true
+}

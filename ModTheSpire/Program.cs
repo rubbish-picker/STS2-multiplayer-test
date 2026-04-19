@@ -1550,9 +1550,8 @@ internal sealed record InstalledMod(
         {
             try
             {
-                using FileStream stream = File.OpenRead(manifestPath);
-                JsonNode? node = JsonNode.Parse(stream);
-                if (node is not JsonObject manifest)
+                JsonObject? manifest = JsonHelpers.LoadObjectFromFile(manifestPath, allowComments: true);
+                if (manifest is null)
                 {
                     continue;
                 }
@@ -1597,6 +1596,22 @@ internal sealed record InstalledMod(
     {
         return Directory.EnumerateFiles(modsDirectory, "*.json", SearchOption.AllDirectories)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+    }
+}
+
+internal static class JsonHelpers
+{
+    public static JsonObject? LoadObjectFromFile(string path, bool allowComments = false)
+    {
+        string json = File.ReadAllText(path, Encoding.UTF8);
+        JsonDocumentOptions documentOptions = new()
+        {
+            AllowTrailingCommas = allowComments,
+            CommentHandling = allowComments ? JsonCommentHandling.Skip : JsonCommentHandling.Disallow,
+        };
+
+        JsonNode? node = JsonNode.Parse(json, documentOptions: documentOptions);
+        return node as JsonObject;
     }
 }
 
