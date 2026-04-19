@@ -92,7 +92,7 @@ internal static class CardBalanceStatPatches
     [HarmonyPrefix]
     private static bool HeirloomHammerUpgradePrefix(HeirloomHammer __instance)
     {
-        __instance.DynamicVars.Damage.UpgradeValueBy(3m);
+        __instance.DynamicVars.Damage.UpgradeValueBy(5m);
         return false;
     }
 
