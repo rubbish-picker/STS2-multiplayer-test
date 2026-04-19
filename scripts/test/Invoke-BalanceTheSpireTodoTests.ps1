@@ -694,7 +694,7 @@ $tests = @(
             $null = Spawn-Card -CardId "FLASH_OF_STEEL"
             $hammerSpawn = Spawn-Card -CardId "HEIRLOOM_HAMMER"
             $hammer = @($hammerSpawn.cards)[0]
-            Assert-Equal -Actual (Get-DynamicIntValue -Card $hammer -Key "Damage") -Expected 22 -Message "HeirloomHammer damage was wrong."
+            Assert-Equal -Actual (Get-DynamicIntValue -Card $hammer -Key "Damage") -Expected 20 -Message "HeirloomHammer damage was wrong."
 
             $beforeHand = Get-Hand
             $beforeFlashCount = @($beforeHand.cards | Where-Object { $_.id -eq "FLASH_OF_STEEL" }).Count
@@ -705,13 +705,13 @@ $tests = @(
 
             $afterState = Get-State
             $enemyAfter = Get-EnemyCreature -State $afterState -Index 0
-            Assert-Equal -Actual ([int]$enemyBefore.currentHp - [int]$enemyAfter.currentHp) -Expected 22 -Message "HeirloomHammer damage dealt was wrong."
+            Assert-Equal -Actual ([int]$enemyBefore.currentHp - [int]$enemyAfter.currentHp) -Expected 20 -Message "HeirloomHammer damage dealt was wrong."
 
             $afterHand = Get-Hand
             $afterFlashCount = @($afterHand.cards | Where-Object { $_.id -eq "FLASH_OF_STEEL" }).Count
             Assert-Equal -Actual $afterFlashCount -Expected ($beforeFlashCount + 1) -Message "HeirloomHammer did not duplicate the selected colorless card."
 
-            return "Dealt 22 damage and duplicated the chosen colorless card."
+            return "Dealt 20 damage and duplicated the chosen colorless card."
         }
     },
     @{

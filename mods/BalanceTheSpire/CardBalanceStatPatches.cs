@@ -5,12 +5,16 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using System;
+using System.Collections.Generic;
+using System.Reflection;
 
 namespace BalanceTheSpire;
 
 [HarmonyPatch]
 internal static class CardBalanceStatPatches
 {
+    private static readonly FieldInfo CardEnergyCostBaseField = AccessTools.Field(typeof(CardEnergyCost), "_base");
+
     [HarmonyPatch(typeof(AbstractModel), nameof(AbstractModel.MutableClone))]
     [HarmonyPostfix]
     private static void AbstractMutableClonePostfix(ref AbstractModel __result)
@@ -47,6 +51,13 @@ internal static class CardBalanceStatPatches
     private static void CardFromSerializablePostfix(ref CardModel __result)
     {
         ApplyBalancedStats(__result, "FromSerializable");
+    }
+
+    [HarmonyPatch(typeof(ModelDb), nameof(ModelDb.InitIds))]
+    [HarmonyPostfix]
+    private static void ModelDbInitIdsPostfix()
+    {
+        RebalanceCanonicalCards();
     }
 
     [HarmonyPatch(typeof(SpoilsOfBattle), "OnUpgrade")]
@@ -138,7 +149,7 @@ internal static class CardBalanceStatPatches
                 didAdjust = true;
                 break;
             case MinionDiveBomb minionDiveBomb:
-                minionDiveBomb.EnergyCost.SetCustomBaseCost(0);
+                SetBaseEnergyCost(minionDiveBomb, 0);
                 didAdjust = true;
                 break;
             case CollisionCourse collisionCourse:
@@ -146,7 +157,7 @@ internal static class CardBalanceStatPatches
                 didAdjust = true;
                 break;
             case HeirloomHammer heirloomHammer:
-                heirloomHammer.DynamicVars.Damage.BaseValue = upgraded ? 25m : 22m;
+                heirloomHammer.DynamicVars.Damage.BaseValue = upgraded ? 25m : 20m;
                 didAdjust = true;
                 break;
             case GatherLight gatherLight:
@@ -154,7 +165,7 @@ internal static class CardBalanceStatPatches
                 didAdjust = true;
                 break;
             case BundleOfJoy bundleOfJoy:
-                bundleOfJoy.EnergyCost.SetCustomBaseCost(1);
+                SetBaseEnergyCost(bundleOfJoy, 1);
                 didAdjust = true;
                 break;
             case IAmInvincible iAmInvincible:
@@ -214,5 +225,43 @@ internal static class CardBalanceStatPatches
         {
             MainFile.Logger.Info($"[BalanceDebug] {source}: {card.Id.Entry} upgraded={upgraded} cost={diveBomb.EnergyCost.GetWithModifiers(CostModifiers.Local)} damage={diveBomb.DynamicVars.Damage.BaseValue}");
         }
+    }
+
+    private static void RebalanceCanonicalCards()
+    {
+        try
+        {
+            HashSet<CardModel> seen = [];
+            int rebalancedCount = 0;
+
+            foreach (CardModel card in ModelDb.AllCards)
+            {
+                if (!seen.Add(card))
+                {
+                    continue;
+                }
+
+                ApplyBalancedStats(card, "ModelDb.InitIds");
+                rebalancedCount++;
+            }
+
+            MainFile.Logger.Info($"[BalanceDebug] Rebalanced {rebalancedCount} canonical cards after ModelDb.InitIds.");
+        }
+        catch (Exception ex)
+        {
+            MainFile.Logger.Error($"[BalanceDebug] Failed to rebalance canonical cards: {ex}");
+        }
+    }
+
+    private static void SetBaseEnergyCost(CardModel card, int newBaseCost)
+    {
+        if (!card.IsCanonical)
+        {
+            card.EnergyCost.SetCustomBaseCost(newBaseCost);
+            return;
+        }
+
+        CardEnergyCost energyCost = card.EnergyCost;
+        CardEnergyCostBaseField.SetValue(energyCost, newBaseCost);
     }
 }

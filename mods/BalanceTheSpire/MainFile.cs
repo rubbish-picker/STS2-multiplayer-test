@@ -39,6 +39,7 @@ public partial class MainFile : Node
     {
         try
         {
+            LogCanonicalCardStateSafe<SpoilsOfBattle>("SpoilsOfBattle", card => $"forge={card.DynamicVars.Forge.BaseValue}");
             LogCardStateSafe<SpoilsOfBattle>("SpoilsOfBattle", card => $"forge={card.DynamicVars.Forge.BaseValue}");
             LogCardStateSafe<MinionDiveBomb>("MinionDiveBomb", card => $"cost={card.EnergyCost.GetWithModifiers(CostModifiers.Local)} damage={card.DynamicVars.Damage.BaseValue}");
             LogCardStateSafe<CollisionCourse>("CollisionCourse", card => $"damage={card.DynamicVars.Damage.BaseValue}");
@@ -63,6 +64,19 @@ public partial class MainFile : Node
         {
             Logger.Error($"[BalanceStartup] diagnostic failed: {ex}");
             return false;
+        }
+    }
+
+    private static void LogCanonicalCardStateSafe<T>(string label, Func<T, string> describe) where T : CardModel
+    {
+        try
+        {
+            T card = ModelDb.Card<T>();
+            Logger.Info($"[BalanceStartup] {label} canonical {describe(card)}");
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[BalanceStartup] {label} canonical diagnostic failed: {ex.Message}");
         }
     }
 
